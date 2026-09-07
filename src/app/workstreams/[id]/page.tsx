@@ -9,7 +9,9 @@ export default function WorkstreamDetailPage() {
   const id = String(params.id);
   const workstreams = useControlStore((s) => s.workstreams);
   const agents = useControlStore((s) => s.agents);
+  const mode = useControlStore((s) => s.mode);
   const startFocus = useControlStore((s) => s.startFocus);
+  const endFocus = useControlStore((s) => s.endFocus);
   const ws = workstreams.find((w) => w.id === id);
 
   if (!ws) {
@@ -52,9 +54,9 @@ export default function WorkstreamDetailPage() {
           <button
             type="button"
             className="btn-secondary"
-            onClick={() => startFocus(ws.id)}
+            onClick={() => (mode === "focus" ? endFocus() : startFocus(ws.id))}
           >
-            Start focus
+            {mode === "focus" ? "End focus" : "Start focus"}
           </button>
           <Link href="/now" className="btn-ghost">
             Now
