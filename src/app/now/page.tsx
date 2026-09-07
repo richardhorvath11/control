@@ -43,6 +43,21 @@ function DayStrip() {
   );
 }
 
+function FocusToggleButton({ className = "btn-secondary" }: { className?: string }) {
+  const mode = useControlStore((s) => s.mode);
+  const startFocus = useControlStore((s) => s.startFocus);
+  const endFocus = useControlStore((s) => s.endFocus);
+  return (
+    <button
+      type="button"
+      className={className}
+      onClick={() => (mode === "focus" ? endFocus() : startFocus())}
+    >
+      {mode === "focus" ? "End focus" : "Start focus"}
+    </button>
+  );
+}
+
 function MorningNow() {
   const router = useRouter();
   const workstreams = useControlStore((s) => s.workstreams);
@@ -57,7 +72,6 @@ function MorningNow() {
   const delegate = useControlStore((s) => s.delegate);
   const delegateAttention = useControlStore((s) => s.delegateAttention);
   const resolveAttention = useControlStore((s) => s.resolveAttention);
-  const startFocus = useControlStore((s) => s.startFocus);
   const [fyiOpen, setFyiOpen] = useState(false);
 
   const resume = workstreams.find((w) => w.id === "ws-cred") ?? workstreams[0];
@@ -71,9 +85,7 @@ function MorningNow() {
             Morning · understand the day, resume or decide
           </p>
         </div>
-        <button type="button" className="btn-secondary" onClick={() => startFocus()}>
-          Start focus
-        </button>
+        <FocusToggleButton />
       </header>
 
       <DayStrip />
@@ -242,14 +254,23 @@ function FocusNow() {
           Next: {ws?.next}
         </p>
       </div>
-      <p className="text-[13px] text-muted">
-        {running} agents working · {needs} need you
-        {pending > 0 ? ` · ${pending} in Review` : ""}
-      </p>
-      <p className="text-[12px] text-muted max-w-md">
-        Agent completion only increments the Review badge. No toasts, banners, or
-        pulses while you are here.
-      </p>
+      <div className="space-y-2">
+        <p className="text-[13px] text-muted">
+          {running} agents working · {needs} need you
+          {pending > 0 ? ` · ${pending} in Review` : ""}
+        </p>
+        {needs === 0 ? (
+          <p className="text-[13px] text-muted">
+            Quiet — nothing needs you. No action required. Keep working; agent
+            completion only updates the Review badge.
+          </p>
+        ) : (
+          <p className="text-[12px] text-muted max-w-md">
+            Agent completion only increments the Review badge. No toasts, banners,
+            or pulses while you are here.
+          </p>
+        )}
+      </div>
       <div className="flex gap-2 pt-4">
         <button type="button" className="btn-secondary" onClick={endFocus}>
           End focus
@@ -270,7 +291,6 @@ function FocusNow() {
 function ClearNow() {
   const workstreams = useControlStore((s) => s.workstreams);
   const dayStrip = useControlStore((s) => s.dayStrip);
-  const startFocus = useControlStore((s) => s.startFocus);
   const resume = workstreams.find((w) => w.id === "ws-cred");
   const nextMeeting = dayStrip.meetings.find((m) => m.time === "2:00");
 
@@ -288,9 +308,7 @@ function ClearNow() {
             Resume {resume.name}
           </Link>
         )}
-        <button type="button" className="btn-secondary" onClick={() => startFocus()}>
-          Start focus
-        </button>
+        <FocusToggleButton />
       </div>
     </div>
   );

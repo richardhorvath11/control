@@ -11,6 +11,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const launcherOpen = useControlStore((s) => s.launcherOpen);
 
   useEffect(() => {
+    const unsub = useControlStore.persist.onFinishHydration(() => {
+      useControlStore.getState().setHasHydrated(true);
+    });
+    void useControlStore.persist.rehydrate();
+    return unsub;
+  }, []);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();

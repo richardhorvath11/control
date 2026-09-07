@@ -5,6 +5,7 @@ export type WorkstreamPhase =
   | "Paused"
   | "Draft"
   | "Running"
+  | "Delegated"
   | "Blocked";
 
 export type AgentStatus =
@@ -48,6 +49,10 @@ export interface Workstream {
   artifacts: Artifact[];
   agentIds: string[];
   status: "default" | "idle" | "running" | "blocked-on-you";
+  /** Short-lived delegate job; hidden from Active when active===false */
+  ephemeral?: boolean;
+  /** false = leave Active sidebar; remains in workstreams list (searchable) */
+  active?: boolean;
 }
 
 export interface AttentionItem {

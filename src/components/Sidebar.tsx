@@ -23,6 +23,7 @@ function phaseDot(phase: string) {
   if (phase === "Human review") return "bg-amber";
   if (phase === "Paused") return "bg-muted";
   if (phase === "Draft") return "bg-border";
+  if (phase === "Delegated") return "bg-running";
   return "bg-running";
 }
 
@@ -39,6 +40,11 @@ export function Sidebar() {
     [agents]
   );
   const workstreams = useControlStore((s) => s.workstreams);
+  // Active: active!==false (completed ephemeral have active:false and leave list)
+  const activeList = useMemo(
+    () => workstreams.filter((ws) => ws.active !== false),
+    [workstreams]
+  );
   const mode = useControlStore((s) => s.mode);
   const startFocus = useControlStore((s) => s.startFocus);
   const endFocus = useControlStore((s) => s.endFocus);
@@ -86,7 +92,7 @@ export function Sidebar() {
           Active
         </div>
         <div className="space-y-1">
-          {workstreams.map((ws) => {
+          {activeList.map((ws) => {
             const active = pathname === `/workstreams/${ws.id}`;
             return (
               <Link

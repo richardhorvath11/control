@@ -13,7 +13,8 @@ export function ConfirmModal() {
       <div className="w-full max-w-lg panel p-5 shadow-2xl">
         <h2 className="text-[16px] font-semibold leading-6">{modal.title}</h2>
         <p className="mt-1 text-[12px] text-muted">
-          External action — nothing posts until you confirm.
+          {modal.subtitle ??
+            "External action — nothing posts until you confirm."}
         </p>
         <pre className="mt-4 whitespace-pre-wrap rounded-lg border border-border bg-bg p-3 text-[13px] leading-5 font-sans text-text">
           {modal.body}
