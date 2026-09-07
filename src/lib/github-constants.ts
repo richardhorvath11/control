@@ -1,2 +1,2 @@
-/** V0.5 acceptance: Cap GitHub-originated Needs-you at 2. Ingest unlimited; older demote to FYI. */
-export const GITHUB_NEEDS_YOU_CAP = 2;
+/** User-locked Needs-you cap for GitHub-originated items. Ingest unlimited; older demote to FYI. Do NOT set to 2. */
+export const GITHUB_NEEDS_YOU_CAP = 5;
