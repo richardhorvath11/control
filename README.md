@@ -102,7 +102,7 @@ CUT: opened/merged/closed, issues, comment floods, labels, assigns, org-wide wat
 | `review.requested` | Needs you if `action_on_user`, else FYI |
 | `review.changes_requested` | Needs you (prefer Now) |
 
-Hard rules: cap GitHub-originated Needs-you at **2**; dedupe by event `id` and by `(type, pr_number, head_sha)`; no toasts; Review badge behavior unchanged.
+Hard rules: cap GitHub-originated Needs-you at **5**; dedupe by event `id` and by `(type, pr_number, head_sha)`; no toasts; Review badge behavior unchanged.
 
 ### Inbox API
 
