@@ -31,6 +31,8 @@ interface ControlState {
   fyi: string[];
   sources: SeedData["sources"];
   usedDelegationIds: string[];
+  /** Event ids already merged from GitHub inbox into this store */
+  appliedGithubEventIds: string[];
   selectedReviewId: string | null;
   confirmModal: null | {
     title: string;
@@ -60,6 +62,30 @@ interface ControlState {
 
   resolveAttention: (id: string) => void;
   updateCheckpoint: (workstreamId: string, text: string) => void;
+
+  /** Merge durable GitHub inbox effects into Attention + workstreams (idempotent). */
+  applyGithubInboxItems: (
+    items: {
+      id: string;
+      applied: boolean;
+      duplicate: boolean;
+      effects: {
+        attention: AttentionItem | null;
+        fyiLine: string | null;
+        workstreamPatch: {
+          id: string;
+          changedEntry: string;
+          phase?: Workstream["phase"];
+          status?: Workstream["status"];
+          next?: string;
+          waitingOn?: string;
+          lastActive?: string;
+        } | null;
+        capped?: boolean;
+      } | null;
+    }[]
+  ) => void;
+  syncGithubInbox: () => Promise<void>;
 
   delegate: (delegationId: string) => void;
   delegateAttention: (attentionId: string) => void;
@@ -98,6 +124,7 @@ export const useControlStore = create<ControlState>()(
       fyi: initial.fyi,
       sources: initial.sources as SeedData["sources"],
       usedDelegationIds: [],
+      appliedGithubEventIds: [],
       selectedReviewId: initial.reviewQueue[0]?.id ?? null,
       confirmModal: null,
       launcherOpen: false,
@@ -157,6 +184,131 @@ export const useControlStore = create<ControlState>()(
             w.id === workstreamId ? { ...w, checkpoint: text } : w
           ),
         });
+      },
+
+      applyGithubInboxItems: (items) => {
+        let attention = [...get().attention];
+        let workstreams = [...get().workstreams];
+        let fyi = [...get().fyi];
+        const appliedIds = new Set(get().appliedGithubEventIds);
+        let changed = false;
+
+        for (const item of items) {
+          if (!item.applied || item.duplicate || !item.effects) continue;
+          const effects = item.effects;
+          const already = appliedIds.has(item.id);
+
+          if (effects.attention) {
+            const att = { ...effects.attention } as AttentionItem;
+            const existingIdx = attention.findIndex((a) => a.id === att.id);
+            if (existingIdx >= 0) {
+              // Reconcile routing (server may have demoted older Needs-you).
+              const prev = attention[existingIdx];
+              if (prev.routing !== att.routing || prev.why !== att.why) {
+                attention = attention.map((a, i) =>
+                  i === existingIdx
+                    ? {
+                        ...a,
+                        routing: att.routing,
+                        why: att.why,
+                        provenance: att.provenance,
+                      }
+                    : a
+                );
+                changed = true;
+              }
+            } else if (!already) {
+              if (att.routing === "now") {
+                attention = [att, ...attention];
+              } else {
+                attention = [...attention, att];
+              }
+              changed = true;
+            }
+          }
+
+          if (!already) {
+            if (effects.fyiLine && !fyi.includes(effects.fyiLine)) {
+              fyi = [effects.fyiLine, ...fyi];
+              changed = true;
+            }
+
+            if (effects.workstreamPatch) {
+              const patch = effects.workstreamPatch;
+              workstreams = workstreams.map((w) => {
+                if (w.id !== patch.id) return w;
+                return {
+                  ...w,
+                  changed: [patch.changedEntry, ...w.changed],
+                  phase: patch.phase ?? w.phase,
+                  status: patch.status ?? w.status,
+                  next: patch.next ?? w.next,
+                  waitingOn: patch.waitingOn ?? w.waitingOn,
+                  lastActive: patch.lastActive ?? w.lastActive,
+                };
+              });
+              changed = true;
+            }
+
+            appliedIds.add(item.id);
+            changed = true;
+          } else if (effects.fyiLine && !fyi.includes(effects.fyiLine)) {
+            fyi = [effects.fyiLine, ...fyi];
+            changed = true;
+          }
+        }
+
+        // Client-side safety: demote oldest GitHub Needs-you when over cap 5.
+        const GITHUB_NEEDS_YOU_CAP = 5;
+        const githubNow = attention
+          .filter(
+            (a) =>
+              a.origin === "github" && a.routing === "now" && !a.resolved
+          )
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        if (githubNow.length > GITHUB_NEEDS_YOU_CAP) {
+          const demoteIds = new Set(
+            githubNow
+              .slice(0, githubNow.length - GITHUB_NEEDS_YOU_CAP)
+              .map((a) => a.id)
+          );
+          attention = attention.map((a) => {
+            if (!demoteIds.has(a.id)) return a;
+            const line = `GitHub (capped) · ${a.title}`;
+            if (!fyi.includes(line)) fyi = [line, ...fyi];
+            return {
+              ...a,
+              routing: "fyi" as const,
+              why: `${a.why} (older Needs-you demoted — GitHub cap ${GITHUB_NEEDS_YOU_CAP})`,
+            };
+          });
+          changed = true;
+        }
+
+        if (!changed) return;
+
+        set({
+          attention,
+          workstreams,
+          fyi,
+          appliedGithubEventIds: Array.from(appliedIds),
+        });
+        get().recomputeMode();
+      },
+
+      syncGithubInbox: async () => {
+        try {
+          const res = await fetch("/api/github/inbox");
+          if (!res.ok) return;
+          const data = (await res.json()) as {
+            items?: Parameters<ControlState["applyGithubInboxItems"]>[0];
+          };
+          if (Array.isArray(data.items)) {
+            get().applyGithubInboxItems(data.items);
+          }
+        } catch {
+          // offline / no watcher — seed still boots
+        }
       },
 
       recomputeMode: () => {
@@ -810,6 +962,8 @@ export const useControlStore = create<ControlState>()(
         reviewQueue: state.reviewQueue,
         agents: state.agents,
         usedDelegationIds: state.usedDelegationIds,
+        appliedGithubEventIds: state.appliedGithubEventIds,
+        fyi: state.fyi,
         selectedReviewId: state.selectedReviewId,
         sources: state.sources,
         suggestedDelegations: state.suggestedDelegations,

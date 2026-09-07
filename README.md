@@ -1,4 +1,4 @@
-# Control — V0
+# Control — V0.5
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
 
@@ -71,11 +71,175 @@ Legacy `POST /api/slack/post` is soft-disabled (HTTP 410).
 
 No secrets in git. Credentials (if any) live only with the Slack MCP host, not in Control.
 
+
+## GitHub ingestion (V0.5 inbox)
+
+Mirror of the Slack outbox pattern, **inverted**: a watcher/agent POSTs canonical events → Control durable inbox → routing updates Attention Items + the watched workstream. Events never render as a chronological GitHub feed.
+
+Control holds **no GitHub token**. Live credentials stay with GitHub MCP / `gh` on the agent host. Seeded Monday still boots offline with an empty inbox.
+
+### Watch config
+
+| | |
+|--|--|
+| Template (committed) | `watch.example.json` |
+| Runtime (gitignored) | `.control/watch.json` — created from the example on first API use if missing |
+| Default | `{ "repo": "acme/nightingale", "pr": 1847, "workstreamId": "ws-cred" }` |
+
+### Events in scope
+
+`pr.pushed` · `ci.failed` · `ci.passed` · `review.requested` · `review.changes_requested`
+
+CUT: opened/merged/closed, issues, comment floods, labels, assigns, org-wide watch, webhooks, GitHub App in Control.
+
+### Routing (no feed UI)
+
+| Event | Effect |
+|-------|--------|
+| `pr.pushed` | Workstream changed + FYI only — Needs-you count unchanged |
+| `ci.passed` | Workstream state / FYI |
+| `ci.failed` | Needs you (one item) + workstream blocked; Open source → `provenance.url` |
+| `review.requested` | Needs you if `action_on_user`, else FYI |
+| `review.changes_requested` | Needs you (prefer Now) |
+
+Hard rules: cap GitHub-originated Needs-you at **2**; dedupe by event `id` and by `(type, pr_number, head_sha)`; no toasts; Review badge behavior unchanged.
+
+### Inbox API
+
+Durable files: `.control/github-inbox/<id>.json` (under gitignored `.control/`).
+
+**Event schema** (`GitHubInboxEvent`):
+
+```json
+{
+  "id": "ci-failed-1847-abc1234",
+  "type": "ci.failed",
+  "repo": "acme/nightingale",
+  "pr_number": 1847,
+  "head_sha": "abc1234",
+  "summary": "integration-staging failed",
+  "occurred_at": "2026-09-07T21:00:00.000Z",
+  "provenance": {
+    "url": "https://github.com/acme/nightingale/actions/runs/123456",
+    "title": "CI · integration-staging",
+    "kind": "ci"
+  },
+  "workstream_id": "ws-cred",
+  "action_on_user": true
+}
+```
+
+| Method | Path | Body | Response |
+|--------|------|------|----------|
+| `GET` | `/api/github/inbox` | — | `{ ok, watch, items }` |
+| `POST` | `/api/github/inbox` | `GitHubInboxEvent` | `{ ok, event, applied, duplicate?, item }` |
+
+Malformed POST → **4xx** and does not write inbox state. Offline seed Needs-you stays at the Monday 2 items until events arrive. Client polls the inbox and merges into the persisted Zustand store.
+
+See `scripts/github-watcher.md` for the agent sync sketch.
+
+### Offline vs live
+
+- **Offline**: empty `.control/github-inbox/`, mocked `/source/github/*` for seed provenance only.
+- **Live**: watcher POSTs events; Attention Items carry https `provenance.url` and Open source opens the real GitHub/checks page in a new tab.
+
+
+## GitHub inbox (V0.5)
+
+ONE inbound path: a watcher/agent POSTs canonical PR/CI/review events for a **single watched PR**. Control holds **no** GitHub token. Credentials live with GitHub MCP / `gh` on the agent host. Seeded Monday still boots offline with an empty inbox.
+
+### Watch config
+
+| | |
+|--|--|
+| Example (committed) | `watch.example.json` |
+| Runtime (gitignored) | `.control/watch.json` — created from example/defaults if missing |
+| Default `repo` | `acme/nightingale` |
+| Default `pr` | `1847` |
+| Default `workstreamId` | `ws-cred` |
+
+### Events in scope
+
+`pr.pushed` · `ci.failed` · `ci.passed` · `review.requested` · `review.changes_requested`
+
+CUT: `pr.opened/merged/closed`, issues, comment floods, labels, assigns, org-wide watch, webhooks, GitHub App in Control, Slack inbound, posting GitHub comments.
+
+### Routing (events never render as a feed)
+
+| Event | Effect |
+|-------|--------|
+| `pr.pushed` | Workstream changed + FYI only — Needs-you count unchanged |
+| `ci.passed` | Workstream state / FYI |
+| `ci.failed` | Needs you (1) + workstream blocked; **Open source** → real `provenance.url` |
+| `review.requested` | Needs you if `action_on_user`, else FYI |
+| `review.changes_requested` | Needs you |
+
+Hard rules:
+
+- Cap **GitHub-originated** Needs-you at **5**; when over cap, **older** GitHub Needs-you drop to FYI. Ingest stays unlimited.
+- Dedupe by event `id` (idempotent POST) and by `(type, pr_number, head_sha)`
+- No toasts; agent complete still Review badge only
+- Mocked `/source/github/*` remains for offline seed only
+
+### Inbox API
+
+Durable files: `.control/github-inbox/<id>.json` (under gitignored `.control/`).
+
+**GitHubInboxEvent**
+
+```json
+{
+  "id": "evt-ci-fail-001",
+  "type": "ci.failed",
+  "repo": "acme/nightingale",
+  "pr_number": 1847,
+  "head_sha": "abc1234",
+  "summary": "integration-staging failed",
+  "occurred_at": "2026-09-07T14:00:00.000Z",
+  "provenance": {
+    "url": "https://github.com/acme/nightingale/pull/1847/checks",
+    "title": "CI · integration-staging",
+    "kind": "ci"
+  },
+  "workstream_id": "ws-cred",
+  "action_on_user": false
+}
+```
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `GET` | `/api/github/inbox` | Debug: `{ ok, watch, needsYouCap, githubNeedsYou, items }` |
+| `POST` | `/api/github/inbox` | Idempotent accept; `4xx` on malformed (no state write) |
+
+Offline vs live: empty inbox → V0 Monday seed Needs-you (2) unchanged. After POSTs, client sync merges GitHub Attention into the Zustand store (poll ~4s). See `scripts/github-watcher.md`.
+
+### Smoke `ci.failed`
+
+```bash
+curl -sS -X POST http://localhost:3000/api/github/inbox \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "evt-ci-fail-001",
+    "type": "ci.failed",
+    "repo": "acme/nightingale",
+    "pr_number": 1847,
+    "head_sha": "abc1234",
+    "summary": "integration-staging failed on retry budget check",
+    "occurred_at": "2026-09-07T14:00:00.000Z",
+    "provenance": {
+      "url": "https://github.com/acme/nightingale/pull/1847/checks",
+      "title": "CI · integration-staging",
+      "kind": "ci"
+    },
+    "workstream_id": "ws-cred"
+  }'
+```
+
 ## Stack assumptions
 
 - **Next.js App Router** + TypeScript + Tailwind CSS
 - **Zustand** client store hydrated from `src/lib/seed.json`
-- No auth, no live Slack ingestion, no database
+- No auth, no live Slack ingestion, no database, **no GitHub token in Control**
 - Agent delegation simulated with a 3-8s timer; completion increments the Review badge only (no toasts)
 - Slack write for the Priya draft only (confirm-gated outbox -> MCP)
 
@@ -99,9 +263,11 @@ Workstreams: Staging credential rotation (human review), Search ranking experime
 | `/source/rfc/[id]` | Mocked RFC section |
 | `/source/calendar/[id]` | Mocked calendar event |
 | `GET/POST /api/slack/outbox` | Durable Slack outbox for MCP poster |
+| `GET/POST /api/github/inbox` | Durable GitHub inbox (watcher → Control) |
 | `POST /api/slack/outbox/:id/ack` | Mark posted after MCP send |
 | `POST /api/slack/outbox/:id/fail` | Mark failed |
 | `POST /api/slack/post` | Soft-disabled (410) |
+| `GET/POST /api/github/inbox` | Durable GitHub inbox (watcher → Attention) |
 
 Command palette opens the launcher (not chat).
 
@@ -117,4 +283,4 @@ Command palette opens the launcher (not chat).
 
 ## Explicit cuts
 
-Team, auth, live Slack/GitHub/Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now, agent builder, lorem, auto-send without confirm, posting outside #control-e2e, Slack app / bot-token chat.postMessage inside Next.
+Team, auth, live Slack/Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological GitHub feed, agent builder, lorem, auto-send without confirm, posting outside #control-e2e, Slack app / bot-token chat.postMessage inside Next, GitHub App / PAT inside Control.

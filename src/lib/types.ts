@@ -26,6 +26,8 @@ export interface Provenance {
   excerpt: string;
   sourceId: string;
   timestamp?: string;
+  /** Live GitHub https URL — Open source opens externally when set */
+  url?: string;
 }
 
 export interface Artifact {
@@ -65,6 +67,10 @@ export interface AttentionItem {
   provenance: Provenance[];
   createdAt: string;
   resolved?: boolean;
+  /** Seed vs live GitHub inbox — used to cap GitHub Needs-you at 5 */
+  origin?: "seed" | "github";
+  githubEventId?: string;
+  githubDedupeKey?: string;
 }
 
 export interface Finding {

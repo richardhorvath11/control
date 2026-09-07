@@ -13,9 +13,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const unsub = useControlStore.persist.onFinishHydration(() => {
       useControlStore.getState().setHasHydrated(true);
+      // Pull any durable GitHub inbox effects after hydrate (no-op if empty).
+      void useControlStore.getState().syncGithubInbox();
     });
     void useControlStore.persist.rehydrate();
     return unsub;
+  }, []);
+
+  // Poll GitHub inbox so watcher POSTs land in Attention without a feed UI.
+  useEffect(() => {
+    const tick = () => {
+      if (!useControlStore.getState()._hasHydrated) return;
+      void useControlStore.getState().syncGithubInbox();
+    };
+    const id = window.setInterval(tick, 4000);
+    return () => window.clearInterval(id);
   }, []);
 
   useEffect(() => {

@@ -125,7 +125,7 @@ function MorningNow() {
           <div className="row px-4 py-3 text-muted">Nothing needs you right now.</div>
         ) : (
           <ul className="space-y-2">
-            {needsYou.slice(0, 3).map((item) => (
+            {needsYou.map((item) => (
               <li key={item.id} className="row px-4 py-3 flex items-start gap-3">
                 <span className="mt-1.5 h-2 w-0.5 rounded bg-amber shrink-0" />
                 <div className="flex-1 min-w-0">
@@ -148,16 +148,28 @@ function MorningNow() {
                         Open Review
                       </Link>
                     )}
-                    <Link
-                      href={
-                        item.provenance[0]
-                          ? `/source/${item.provenance[0].kind}/${item.provenance[0].sourceId}`
-                          : `/workstreams/${item.workstreamId}`
-                      }
-                      className="btn-ghost"
-                    >
-                      Open source
-                    </Link>
+                    {item.provenance[0]?.url &&
+                    /^https:\/\//i.test(item.provenance[0].url) ? (
+                      <a
+                        href={item.provenance[0].url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn-ghost"
+                      >
+                        Open source
+                      </a>
+                    ) : (
+                      <Link
+                        href={
+                          item.provenance[0]
+                            ? `/source/${item.provenance[0].kind}/${item.provenance[0].sourceId}`
+                            : `/workstreams/${item.workstreamId}`
+                        }
+                        className="btn-ghost"
+                      >
+                        Open source
+                      </Link>
+                    )}
                     <button
                       type="button"
                       className="btn-ghost"
