@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: #0e0f12;
+  color: #e8eaed;
+  min-height: 100%;
+}
+
+body {
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 20px;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2e38;
+  border-radius: 4px;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition border border-transparent;
+  }
+  .btn-primary {
+    @apply btn bg-review text-white hover:brightness-110;
+  }
+  .btn-secondary {
+    @apply btn bg-raised border-border text-text hover:bg-[#22262f];
+  }
+  .btn-ghost {
+    @apply btn text-muted hover:text-text hover:bg-raised;
+  }
+  .btn-danger {
+    @apply btn bg-transparent border-border text-blocked hover:bg-[#2a1816];
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[12px] leading-4 border border-border bg-raised text-muted;
+  }
+  .panel {
+    @apply rounded-xl border border-border bg-surface;
+  }
+  .row {
+    @apply rounded-lg border border-border bg-raised;
+  }
+}

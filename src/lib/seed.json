@@ -1,0 +1,382 @@
+{
+  "clock": "2026-09-07T09:12:00",
+  "clockLabel": "Monday 9:12 AM",
+  "mode": "morning",
+  "focusWorkstreamId": null,
+  "dayStrip": {
+    "meetings": [
+      { "time": "9:30", "title": "Standup", "id": "cal-standup" },
+      { "time": "2:00", "title": "Design review", "id": "cal-design" },
+      { "time": "4:00", "title": "1:1 with Sam", "id": "cal-sam" }
+    ],
+    "focusBlock": "10:00–1:00 Focus"
+  },
+  "workstreams": [
+    {
+      "id": "ws-cred",
+      "name": "Staging credential rotation",
+      "phase": "Human review",
+      "objective": "Rotate staging credentials without blocking deploys.",
+      "next": "Decide whether to keep five retries (conflict with RFC §4.2?).",
+      "changed": [
+        "Review agent finished Sunday with 3 findings on fix/staging-cred-rotation.",
+        "Priya asked in #infra this morning about deploy impact today."
+      ],
+      "waitingOn": "you",
+      "lastActive": "Friday 6:41 PM",
+      "checkpoint": "You left Friday after pushing the rotation PR. The retry loop still uses five attempts — RFC §4.2 caps at three for staging. Sunday's independent review flagged that conflict first. Priya's deploy question landed this morning and will come up in standup. Your next judgment: keep five retries with an RFC exception, or drop to three and re-run CI.",
+      "artifacts": [
+        {
+          "id": "art-pr",
+          "kind": "github",
+          "label": "PR",
+          "detail": "fix/staging-cred-rotation",
+          "sourceId": "pr-cred"
+        },
+        {
+          "id": "art-rfc",
+          "kind": "rfc",
+          "label": "RFC",
+          "detail": "Credential lifecycle · §4.2 Retry budget",
+          "sourceId": "rfc-cred"
+        },
+        {
+          "id": "art-slack",
+          "kind": "slack",
+          "label": "Slack",
+          "detail": "#infra · Priya deploy question",
+          "sourceId": "slack-infra"
+        }
+      ],
+      "agentIds": ["agent-rotation-review"],
+      "status": "blocked-on-you"
+    },
+    {
+      "id": "ws-ranking",
+      "name": "Search ranking experiment",
+      "phase": "Paused",
+      "objective": "Ship a ranking experiment once design lands on Maya's proposal.",
+      "next": "Review Maya's ranking doc after design review.",
+      "changed": [
+        "Literature-scan agent still running — do not interrupt.",
+        "Waiting on design before unpausing implementation."
+      ],
+      "waitingOn": "design",
+      "lastActive": "Thursday 3:20 PM",
+      "checkpoint": "Paused until design review. Maya's ranking doc is the unblock. Literature scan is chewing through papers in the background; leave it alone.",
+      "artifacts": [
+        {
+          "id": "art-rank-doc",
+          "kind": "rfc",
+          "label": "Doc",
+          "detail": "Maya · Ranking experiment proposal",
+          "sourceId": "rfc-ranking"
+        }
+      ],
+      "agentIds": ["agent-literature"],
+      "status": "idle"
+    },
+    {
+      "id": "ws-runbook",
+      "name": "On-call runbook rewrite",
+      "phase": "Draft",
+      "objective": "Rewrite the on-call runbook so a new engineer can take a page without tribal knowledge.",
+      "next": "Not today unless Now is clear — pick up draft outline.",
+      "changed": [
+        "Untouched since Thursday.",
+        "Outline-publish agent blocked on permission to create a doc."
+      ],
+      "waitingOn": "quiet",
+      "lastActive": "Thursday 11:05 AM",
+      "checkpoint": "Quiet draft. Outline agent wants to publish a Google Doc and is blocked on permission. Not today's problem unless the morning clears.",
+      "artifacts": [],
+      "agentIds": ["agent-runbook"],
+      "status": "idle"
+    }
+  ],
+  "attention": [
+    {
+      "id": "att-priya",
+      "routing": "now",
+      "title": "Priya (#infra): does rotation block deploys today?",
+      "why": "Standup in 18 min — this will come up.",
+      "workstreamId": "ws-cred",
+      "suggestedAction": "delegate",
+      "provenance": [
+        {
+          "kind": "slack",
+          "title": "#infra · Priya",
+          "locator": "this morning 8:54 AM",
+          "excerpt": "Hey — does the staging cred rotation block deploys today? Need to know before standup.",
+          "sourceId": "slack-infra",
+          "timestamp": "8:54 AM"
+        }
+      ],
+      "createdAt": "2026-09-07T08:54:00",
+      "resolved": false
+    },
+    {
+      "id": "att-retry",
+      "routing": "now",
+      "title": "Retry-limit decision on rotation PR",
+      "why": "RFC may conflict; merge otherwise unblocked.",
+      "workstreamId": "ws-cred",
+      "suggestedAction": "open_review",
+      "provenance": [
+        {
+          "kind": "github",
+          "title": "fix/staging-cred-rotation",
+          "locator": "retry.ts:48",
+          "excerpt": "const MAX_RETRIES = 5; // staging rotation",
+          "sourceId": "pr-cred"
+        },
+        {
+          "kind": "rfc",
+          "title": "Credential lifecycle §4.2",
+          "locator": "§4.2 Retry budget",
+          "excerpt": "Staging rotations MUST NOT exceed three retries before failing closed.",
+          "sourceId": "rfc-cred"
+        }
+      ],
+      "createdAt": "2026-09-06T18:00:00",
+      "resolved": false
+    }
+  ],
+  "reviewQueue": [
+    {
+      "id": "rev-pr",
+      "kind": "pr_review",
+      "title": "Independent review of rotation PR",
+      "workstreamId": "ws-cred",
+      "label": "Analysis, not truth",
+      "analysisNote": "Prepared analysis of fix/staging-cred-rotation. Findings are claims with evidence — not an approval.",
+      "findings": [
+        {
+          "id": "f1",
+          "title": "Retry behavior may conflict with RFC §4.2",
+          "body": "Implementation sets MAX_RETRIES = 5. RFC §4.2 requires staging rotations fail closed after three retries. Test rotateCreds.retries.spec.ts asserts five attempts. Two callers inherit the constant.",
+          "evidence": [
+            {
+              "kind": "rfc",
+              "title": "RFC · Credential lifecycle · §4.2",
+              "locator": "§4.2 Retry budget",
+              "excerpt": "Staging rotations MUST NOT exceed three retries before failing closed.",
+              "sourceId": "rfc-cred"
+            },
+            {
+              "kind": "github",
+              "title": "retry.ts:48 · MAX_RETRIES = 5",
+              "locator": "packages/creds/src/retry.ts:48",
+              "excerpt": "const MAX_RETRIES = 5; // staging rotation",
+              "sourceId": "pr-cred"
+            },
+            {
+              "kind": "github",
+              "title": "Test · rotateCreds.retries.spec.ts",
+              "locator": "packages/creds/src/retry.ts + rotateCreds.retries.spec.ts",
+              "excerpt": "expect(attempts).toBe(5)",
+              "sourceId": "pr-cred"
+            }
+          ]
+        },
+        {
+          "id": "f2",
+          "title": "Deploy lock held for full retry window",
+          "body": "Rotation acquires the staging deploy lock for the entire retry window (~90s at five attempts). Callers in deploy-pipeline and nightingale-cron both wait on the same lock.",
+          "evidence": [
+            {
+              "kind": "github",
+              "title": "lock.ts · acquireDeployLock",
+              "locator": "packages/creds/src/lock.ts:22",
+              "excerpt": "await acquireDeployLock({ ttlMs: MAX_RETRIES * 18_000 });",
+              "sourceId": "pr-cred"
+            }
+          ]
+        },
+        {
+          "id": "f3",
+          "title": "No rollback path if third-party secret store lags",
+          "body": "If Vault accepts the write but the staging runtime still serves the old secret, the PR has no documented rollback. RFC §5 mentions a dual-publish window; this change does not implement it.",
+          "evidence": [
+            {
+              "kind": "rfc",
+              "title": "RFC · §5 Dual-publish window",
+              "locator": "§5",
+              "excerpt": "New and old credentials MUST both validate for at least one deploy cycle.",
+              "sourceId": "rfc-cred"
+            }
+          ]
+        }
+      ],
+      "scopeFooter": "Examined 8 files · 2 callers · 1 RFC · 14 tests. Absence of findings is not approval.",
+      "status": "pending",
+      "agentId": "agent-rotation-review"
+    },
+    {
+      "id": "rev-slack",
+      "kind": "slack_draft",
+      "title": "Draft Slack reply to Priya",
+      "workstreamId": "ws-cred",
+      "label": "Draft reply",
+      "analysisNote": "Proposed reply for #infra. Nothing is posted until you confirm.",
+      "findings": [],
+      "scopeFooter": "Draft only — posting requires explicit confirmation.",
+      "draftText": "Priya — short answer: it shouldn't block deploys if we land the retry-limit fix this morning. The PR currently holds the staging deploy lock for the full retry window; I'm deciding whether to drop MAX_RETRIES from 5→3 to match RFC §4.2. I'll update this thread before standup either way.",
+      "targetLabel": "#infra · reply to Priya",
+      "status": "pending"
+    }
+  ],
+  "agents": [
+    {
+      "id": "agent-rotation-review",
+      "name": "Rotation review",
+      "status": "Complete",
+      "workstreamId": "ws-cred",
+      "detail": "Independent review of fix/staging-cred-rotation — 3 findings ready in Review.",
+      "completedAt": "Sunday 4:12 PM",
+      "needsReview": true,
+      "reviewItemId": "rev-pr"
+    },
+    {
+      "id": "agent-literature",
+      "name": "Ranking literature scan",
+      "status": "Running",
+      "workstreamId": "ws-ranking",
+      "detail": "Scanning ranking literature for Maya's experiment — do not interrupt.",
+      "startedAt": "Sunday 9:00 PM"
+    },
+    {
+      "id": "agent-runbook",
+      "name": "Runbook outline publish",
+      "status": "Blocked on permission",
+      "workstreamId": "ws-runbook",
+      "detail": "Wants to create a shared doc for the on-call outline.",
+      "permissionRequest": "Create document: On-call runbook outline (shared)"
+    }
+  ],
+  "suggestedDelegations": [
+    {
+      "id": "del-priya",
+      "label": "Investigate Priya's deploy question",
+      "kind": "investigate",
+      "attentionId": "att-priya",
+      "workstreamId": "ws-cred"
+    },
+    {
+      "id": "del-pr",
+      "label": "Independent review of fix/staging-cred-rotation",
+      "kind": "pr_review",
+      "workstreamId": "ws-cred"
+    }
+  ],
+  "fyi": [
+    "3 meetings today · Standup 9:30, Design review 2:00, 1:1 Sam 4:00",
+    "~5h focus available after standup (10:00–1:00)",
+    "Ranking literature-scan agent still running",
+    "On-call runbook untouched since Thursday"
+  ],
+  "sources": {
+    "slack": {
+      "slack-infra": {
+        "channel": "#infra",
+        "title": "Staging credential rotation — deploy impact",
+        "messages": [
+          {
+            "author": "Priya Chen",
+            "time": "8:54 AM",
+            "body": "Hey — does the staging cred rotation block deploys today? Need to know before standup. Nightingale has a staging push queued for ~11."
+          },
+          {
+            "author": "Marcus Wei",
+            "time": "8:57 AM",
+            "body": "Following — we hit the deploy lock Friday during a dry-run. Curious if that's still the case."
+          },
+          {
+            "author": "Priya Chen",
+            "time": "9:01 AM",
+            "body": "@you whenever you have a sec — even a yes/no helps."
+          }
+        ]
+      }
+    },
+    "github": {
+      "pr-cred": {
+        "repo": "acme/platform",
+        "title": "fix: staging credential rotation",
+        "branch": "fix/staging-cred-rotation",
+        "status": "Open · CI green · 2 reviewers requested",
+        "description": "Rotates staging credentials via Vault without requiring a full cluster bounce. Introduces retry + deploy-lock coordination.",
+        "ci": [
+          { "name": "lint", "status": "passed" },
+          { "name": "unit", "status": "passed" },
+          { "name": "integration-staging", "status": "passed" },
+          { "name": "policy-rfc-check", "status": "passed*" }
+        ],
+        "files": [
+          {
+            "path": "packages/creds/src/retry.ts",
+            "patch": "@@ -40,12 +40,18 @@ export async function rotateWithRetry(opts: RotateOpts) {\n-  const MAX_RETRIES = 3;\n+  const MAX_RETRIES = 5; // staging rotation\n   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {\n     try {\n       return await rotateOnce(opts);\n     } catch (err) {\n       if (attempt === MAX_RETRIES) throw err;\n       await sleep(18_000);\n     }\n   }\n }"
+          },
+          {
+            "path": "packages/creds/src/lock.ts",
+            "patch": "@@ -18,6 +18,8 @@ export async function acquireDeployLock(opts: LockOpts) {\n+  // Hold lock across the full retry window so partial rotates cannot interleave with deploys.\n+  await acquireDeployLock({ ttlMs: MAX_RETRIES * 18_000 });\n   return lock;"
+          },
+          {
+            "path": "packages/creds/src/rotateCreds.retries.spec.ts",
+            "patch": "@@ -22,7 +22,7 @@ describe('rotateWithRetry', () => {\n-    expect(attempts).toBe(3);\n+    expect(attempts).toBe(5);\n   });\n });"
+          }
+        ]
+      }
+    },
+    "rfc": {
+      "rfc-cred": {
+        "title": "RFC: Credential lifecycle",
+        "section": "§4.2 Retry budget",
+        "body": "## §4.2 Retry budget\n\nStaging rotations MUST NOT exceed three retries before failing closed. Each retry may wait at most 18 seconds. The deploy lock MUST NOT be held longer than the maximum retry window (3 × 18s = 54s).\n\nRationale: longer lock windows starve nightingale and partner staging deploys. Production may use a higher budget under incident commander approval.\n\n## §5 Dual-publish window\n\nNew and old credentials MUST both validate for at least one deploy cycle before the old secret is revoked. Implementations that skip dual-publish require an explicit RFC exception filed in #infra."
+      },
+      "rfc-ranking": {
+        "title": "Ranking experiment proposal (Maya)",
+        "section": "Overview",
+        "body": "## Overview\n\nMaya proposes a two-week ranking experiment on search result order. Design review is scheduled for 2:00 today. Do not unpause implementation until design signs off on the treatment / control split.\n\n## Open questions for design\n- Cold-start handling for new queries\n- Whether personalization is in-scope for v0 of the experiment"
+      }
+    },
+    "calendar": {
+      "cal-standup": {
+        "id": "cal-standup",
+        "title": "Standup",
+        "start": "9:30 AM",
+        "end": "9:45 AM",
+        "attendees": ["Engineering"],
+        "location": "Zoom · Daily",
+        "notes": " cred rotation deploy impact likely to come up."
+      },
+      "cal-design": {
+        "id": "cal-design",
+        "title": "Design review",
+        "start": "2:00 PM",
+        "end": "2:45 PM",
+        "attendees": ["Maya", "Design", "You"],
+        "location": "Conf · Orion",
+        "notes": "Maya's ranking experiment proposal."
+      },
+      "cal-sam": {
+        "id": "cal-sam",
+        "title": "1:1 with Sam",
+        "start": "4:00 PM",
+        "end": "4:30 PM",
+        "attendees": ["Sam"],
+        "location": "Zoom",
+        "notes": "Weekly 1:1."
+      },
+      "cal-focus": {
+        "id": "cal-focus",
+        "title": "Focus block",
+        "start": "10:00 AM",
+        "end": "1:00 PM",
+        "attendees": ["You"],
+        "location": "Hold",
+        "notes": "~5h focus after standup."
+      }
+    }
+  }
+}
