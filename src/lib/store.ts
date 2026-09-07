@@ -11,6 +11,7 @@ import type {
   SeedData,
   Workstream,
 } from "./types";
+import { GITHUB_NEEDS_YOU_CAP } from "./github-inbox";
 
 const initial = seed as SeedData;
 
@@ -258,8 +259,7 @@ export const useControlStore = create<ControlState>()(
           }
         }
 
-        // Client-side safety: demote oldest GitHub Needs-you when over cap 5.
-        const GITHUB_NEEDS_YOU_CAP = 5;
+        // Client-side safety: demote oldest GitHub Needs-you when over cap 2.
         const githubNow = attention
           .filter(
             (a) =>

@@ -131,87 +131,12 @@ Durable files: `.control/github-inbox/<id>.json` (under gitignored `.control/`).
 
 | Method | Path | Body | Response |
 |--------|------|------|----------|
-| `GET` | `/api/github/inbox` | — | `{ ok, watch, items }` |
+| `GET` | `/api/github/inbox` | — | `{ ok, watch, needsYouCap, githubNeedsYou, items }` |
 | `POST` | `/api/github/inbox` | `GitHubInboxEvent` | `{ ok, event, applied, duplicate?, item }` |
 
-Malformed POST → **4xx** and does not write inbox state. Offline seed Needs-you stays at the Monday 2 items until events arrive. Client polls the inbox and merges into the persisted Zustand store.
+Malformed POST → **4xx** and does not write inbox state. Offline seed Needs-you stays at the Monday 2 items until events arrive. Client polls the inbox and merges into the persisted Zustand store. When GitHub Needs-you would exceed 2, older GitHub Needs-you demote to FYI.
 
 See `scripts/github-watcher.md` for the agent sync sketch.
-
-### Offline vs live
-
-- **Offline**: empty `.control/github-inbox/`, mocked `/source/github/*` for seed provenance only.
-- **Live**: watcher POSTs events; Attention Items carry https `provenance.url` and Open source opens the real GitHub/checks page in a new tab.
-
-
-## GitHub inbox (V0.5)
-
-ONE inbound path: a watcher/agent POSTs canonical PR/CI/review events for a **single watched PR**. Control holds **no** GitHub token. Credentials live with GitHub MCP / `gh` on the agent host. Seeded Monday still boots offline with an empty inbox.
-
-### Watch config
-
-| | |
-|--|--|
-| Example (committed) | `watch.example.json` |
-| Runtime (gitignored) | `.control/watch.json` — created from example/defaults if missing |
-| Default `repo` | `acme/nightingale` |
-| Default `pr` | `1847` |
-| Default `workstreamId` | `ws-cred` |
-
-### Events in scope
-
-`pr.pushed` · `ci.failed` · `ci.passed` · `review.requested` · `review.changes_requested`
-
-CUT: `pr.opened/merged/closed`, issues, comment floods, labels, assigns, org-wide watch, webhooks, GitHub App in Control, Slack inbound, posting GitHub comments.
-
-### Routing (events never render as a feed)
-
-| Event | Effect |
-|-------|--------|
-| `pr.pushed` | Workstream changed + FYI only — Needs-you count unchanged |
-| `ci.passed` | Workstream state / FYI |
-| `ci.failed` | Needs you (1) + workstream blocked; **Open source** → real `provenance.url` |
-| `review.requested` | Needs you if `action_on_user`, else FYI |
-| `review.changes_requested` | Needs you |
-
-Hard rules:
-
-- Cap **GitHub-originated** Needs-you at **5**; when over cap, **older** GitHub Needs-you drop to FYI. Ingest stays unlimited.
-- Dedupe by event `id` (idempotent POST) and by `(type, pr_number, head_sha)`
-- No toasts; agent complete still Review badge only
-- Mocked `/source/github/*` remains for offline seed only
-
-### Inbox API
-
-Durable files: `.control/github-inbox/<id>.json` (under gitignored `.control/`).
-
-**GitHubInboxEvent**
-
-```json
-{
-  "id": "evt-ci-fail-001",
-  "type": "ci.failed",
-  "repo": "acme/nightingale",
-  "pr_number": 1847,
-  "head_sha": "abc1234",
-  "summary": "integration-staging failed",
-  "occurred_at": "2026-09-07T14:00:00.000Z",
-  "provenance": {
-    "url": "https://github.com/acme/nightingale/pull/1847/checks",
-    "title": "CI · integration-staging",
-    "kind": "ci"
-  },
-  "workstream_id": "ws-cred",
-  "action_on_user": false
-}
-```
-
-| Method | Path | Notes |
-|--------|------|-------|
-| `GET` | `/api/github/inbox` | Debug: `{ ok, watch, needsYouCap, githubNeedsYou, items }` |
-| `POST` | `/api/github/inbox` | Idempotent accept; `4xx` on malformed (no state write) |
-
-Offline vs live: empty inbox → V0 Monday seed Needs-you (2) unchanged. After POSTs, client sync merges GitHub Attention into the Zustand store (poll ~4s). See `scripts/github-watcher.md`.
 
 ### Smoke `ci.failed`
 
@@ -219,21 +144,27 @@ Offline vs live: empty inbox → V0 Monday seed Needs-you (2) unchanged. After P
 curl -sS -X POST http://localhost:3000/api/github/inbox \
   -H 'Content-Type: application/json' \
   -d '{
-    "id": "evt-ci-fail-001",
+    "id": "ci-failed-1847-abc1234",
     "type": "ci.failed",
     "repo": "acme/nightingale",
     "pr_number": 1847,
     "head_sha": "abc1234",
-    "summary": "integration-staging failed on retry budget check",
-    "occurred_at": "2026-09-07T14:00:00.000Z",
+    "summary": "integration-staging failed on head abc1234",
+    "occurred_at": "2026-09-07T21:00:00.000Z",
     "provenance": {
-      "url": "https://github.com/acme/nightingale/pull/1847/checks",
+      "url": "https://github.com/acme/nightingale/actions/runs/123456",
       "title": "CI · integration-staging",
       "kind": "ci"
     },
     "workstream_id": "ws-cred"
   }'
 ```
+
+### Offline vs live
+
+- **Offline**: empty `.control/github-inbox/`, mocked `/source/github/*` for seed provenance only.
+- **Live**: watcher POSTs events; Attention Items carry https `provenance.url` and Open source opens the real GitHub/checks page in a new tab.
+
 
 ## Stack assumptions
 
@@ -267,7 +198,6 @@ Workstreams: Staging credential rotation (human review), Search ranking experime
 | `POST /api/slack/outbox/:id/ack` | Mark posted after MCP send |
 | `POST /api/slack/outbox/:id/fail` | Mark failed |
 | `POST /api/slack/post` | Soft-disabled (410) |
-| `GET/POST /api/github/inbox` | Durable GitHub inbox (watcher → Attention) |
 
 Command palette opens the launcher (not chat).
 

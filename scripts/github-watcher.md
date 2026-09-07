@@ -29,7 +29,7 @@ Default fields:
 3. For each state change, `POST /api/github/inbox` with a `GitHubInboxEvent`.
 4. Control persists under `.control/github-inbox/<id>.json` and routes into Attention Items + workstream.
 5. Idempotent: same `id` or same `(type, pr_number, head_sha)` does not duplicate Attention Items.
-6. GitHub Needs-you capped at **5**; older GitHub Needs-you drop to FYI. Ingest stays unlimited.
+6. GitHub Needs-you capped at **2**; older GitHub Needs-you drop to FYI. Ingest stays unlimited.
 
 ## Example `ci.failed`
 

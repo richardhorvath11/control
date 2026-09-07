@@ -67,7 +67,7 @@ export interface AttentionItem {
   provenance: Provenance[];
   createdAt: string;
   resolved?: boolean;
-  /** Seed vs live GitHub inbox — used to cap GitHub Needs-you at 5 */
+  /** Seed vs live GitHub inbox — used to cap GitHub Needs-you at 2 */
   origin?: "seed" | "github";
   githubEventId?: string;
   githubDedupeKey?: string;
