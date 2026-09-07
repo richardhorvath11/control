@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useControlStore } from "@/lib/store";
 
 export function ReviewWorkspace({ itemId }: { itemId: string }) {
@@ -11,16 +11,31 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
   const approveReview = useControlStore((s) => s.approveReview);
   const rejectReview = useControlStore((s) => s.rejectReview);
   const editReviewDraft = useControlStore((s) => s.editReviewDraft);
+  const pollSlackOutbox = useControlStore((s) => s.pollSlackOutbox);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item?.draftText ?? "");
   const [selectedFinding, setSelectedFinding] = useState(
     item?.findings[0]?.id ?? null
   );
 
+  // Resume polling if we remount while still queued (e.g. refresh / navigate back).
+  useEffect(() => {
+    if (
+      item?.status === "queued" &&
+      item.slackOutboxId &&
+      item.slackQueueStatus === "pending"
+    ) {
+      pollSlackOutbox(item.id, item.slackOutboxId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id, item?.status, item?.slackOutboxId, item?.slackQueueStatus]);
+
   if (!item) return null;
 
   const finding =
     item.findings.find((f) => f.id === selectedFinding) ?? item.findings[0];
+  const isQueued = item.status === "queued";
+  const queuePending = isQueued && item.slackQueueStatus !== "failed";
 
   return (
     <div className="px-8 py-6 max-w-3xl space-y-5">
@@ -52,6 +67,21 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                 >
                   open harness thread
                 </a>
+              </div>
+            ) : null}
+            {queuePending ? (
+              <div className="rounded-lg border border-review/40 bg-[#161b28] px-3 py-2 text-[12px] leading-5 text-review">
+                Queued for Slack (awaiting MCP poster)
+                {item.slackOutboxId ? (
+                  <span className="ml-2 font-mono text-[11px] text-muted">
+                    {item.slackOutboxId}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            {item.slackQueueStatus === "failed" && item.status === "pending" ? (
+              <div className="rounded-lg border border-blocked/40 bg-[#2a1816] px-3 py-2 text-[12px] leading-5 text-blocked">
+                Outbox failed — review is pending again. Retry Approve when ready.
               </div>
             ) : null}
             {item.postedReply?.permalink ? (
@@ -105,16 +135,23 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
               </>
             ) : (
               <>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={() => approveReview(item.id)}
-                >
-                  Approve…
-                </button>
+                {!isQueued ? (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => approveReview(item.id)}
+                  >
+                    Approve…
+                  </button>
+                ) : (
+                  <button type="button" className="btn-primary" disabled>
+                    Queued…
+                  </button>
+                )}
                 <button
                   type="button"
                   className="btn-secondary"
+                  disabled={isQueued}
                   onClick={() => {
                     setDraft(item.draftText ?? "");
                     setEditing(true);

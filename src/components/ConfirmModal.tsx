@@ -46,7 +46,7 @@ export function ConfirmModal() {
               void Promise.resolve(modal.onConfirm());
             }}
           >
-            {busy ? "Posting…" : modal.confirmLabel}
+            {busy ? (modal.confirmLabel.startsWith("Post") ? "Queuing…" : "Working…") : modal.confirmLabel}
           </button>
         </div>
       </div>

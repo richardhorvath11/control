@@ -69,6 +69,12 @@ interface ControlState {
   rejectReview: (id: string) => void;
   editReviewDraft: (id: string, text: string) => void;
   confirmPostSlack: (id: string) => Promise<void>;
+  applySlackOutboxPosted: (
+    id: string,
+    reply: { ts?: string; channel?: string; permalink?: string }
+  ) => void;
+  applySlackOutboxFailed: (id: string, error?: string) => void;
+  pollSlackOutbox: (reviewId: string, outboxId: string) => void;
 
   approveAgentPermission: (agentId: string) => void;
   dismissAgentPermission: (agentId: string) => void;
@@ -405,7 +411,7 @@ export const useControlStore = create<ControlState>()(
             body: item.draftText ?? "",
             confirmLabel: `Post to ${channel}`,
             subtitle:
-              "Real Slack write to the E2E harness thread — nothing posts until you confirm. Cancel leaves Review unchanged.",
+              "Queues a durable outbox record for Grok’s Slack MCP poster — nothing reaches Slack until you confirm. Cancel leaves Review unchanged.",
             onConfirm: () => get().confirmPostSlack(id),
           });
           return;
@@ -464,7 +470,8 @@ export const useControlStore = create<ControlState>()(
         }
 
         const remaining = get().reviewQueue.filter(
-          (r) => r.status === "pending" && r.id !== id
+          (r) =>
+            (r.status === "pending" || r.status === "queued") && r.id !== id
         );
         set({
           selectedReviewId: remaining[0]?.id ?? null,
@@ -487,7 +494,8 @@ export const useControlStore = create<ControlState>()(
           );
         }
         const remaining = get().reviewQueue.filter(
-          (r) => r.status === "pending" && r.id !== id
+          (r) =>
+            (r.status === "pending" || r.status === "queued") && r.id !== id
         );
         set({ selectedReviewId: remaining[0]?.id ?? null });
         get().recomputeMode();
@@ -503,13 +511,13 @@ export const useControlStore = create<ControlState>()(
 
       confirmPostSlack: async (id) => {
         const item = get().reviewQueue.find((r) => r.id === id);
-        if (!item || item.status !== "pending") return;
+        if (!item || (item.status !== "pending" && item.status !== "queued"))
+          return;
+        if (item.status === "queued") return;
 
         const textBody = item.draftText ?? "";
-        const channelId =
-          item.slackTarget?.channelId ?? "C0BVCSA4T2P";
-        const threadTs =
-          item.slackTarget?.threadTs ?? "1788808933.776429";
+        const channelId = item.slackTarget?.channelId ?? "C0BVCSA4T2P";
+        const threadTs = item.slackTarget?.threadTs ?? "1788808933.776429";
 
         const modal = get().confirmModal;
         if (modal) {
@@ -519,21 +527,21 @@ export const useControlStore = create<ControlState>()(
         }
 
         try {
-          const res = await fetch("/api/slack/post", {
+          const res = await fetch("/api/slack/outbox", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               text: textBody,
               channelId,
               threadTs,
+              reviewItemId: id,
+              provenance: item.provenance ?? null,
             }),
           });
 
           let data: {
             error?: string;
-            ts?: string;
-            channel?: string;
-            permalink?: string;
+            item?: { id: string; status?: string };
           } = {};
           try {
             data = (await res.json()) as typeof data;
@@ -544,7 +552,7 @@ export const useControlStore = create<ControlState>()(
           // User cancelled while in flight — do not apply success or reopen.
           if (!get().confirmModal) return;
 
-          if (!res.ok) {
+          if (!res.ok || !data.item?.id) {
             const current = get().confirmModal;
             if (current) {
               set({
@@ -553,90 +561,31 @@ export const useControlStore = create<ControlState>()(
                   loading: false,
                   error:
                     data.error ||
-                    `Slack post failed (HTTP ${res.status}). Nothing was marked approved.`,
+                    `Outbox write failed (HTTP ${res.status}). Review stays pending.`,
                 },
               });
             }
             return;
           }
 
-          // Success — only now approve + update local mock UI.
+          const outboxId = data.item.id;
+
+          // Queued — close modal; do NOT mark Posted until MCP ack.
           set({
             reviewQueue: get().reviewQueue.map((r) =>
               r.id === id
                 ? {
                     ...r,
-                    status: "approved",
-                    postedReply: data.ts
-                      ? {
-                          ts: data.ts,
-                          channel: data.channel,
-                          permalink: data.permalink,
-                        }
-                      : r.postedReply,
+                    status: "queued",
+                    slackOutboxId: outboxId,
+                    slackQueueStatus: "pending",
                   }
                 : r
             ),
             confirmModal: null,
           });
 
-          if (textBody) {
-            const sources = { ...get().sources };
-            const thread = sources.slack["slack-infra"];
-            if (thread) {
-              sources.slack = {
-                ...sources.slack,
-                "slack-infra": {
-                  ...thread,
-                  messages: [
-                    ...thread.messages,
-                    {
-                      author: "You",
-                      time: "just now",
-                      body: textBody,
-                    },
-                  ],
-                },
-              };
-              set({ sources });
-            }
-          }
-
-          if (item.workstreamId) {
-            const ws = get().workstreams.find(
-              (w) => w.id === item.workstreamId
-            );
-            if (ws) {
-              get().updateCheckpoint(
-                item.workstreamId,
-                ws.checkpoint +
-                  ` Posted Slack reply to Priya` +
-                  (data.ts ? ` (ts ${data.ts})` : "") +
-                  `.`
-              );
-              set({
-                workstreams: get().workstreams.map((w) =>
-                  w.id === item.workstreamId
-                    ? {
-                        ...w,
-                        changed: [
-                          "Replied to Priya in #control-e2e (E2E harness).",
-                          ...w.changed,
-                        ],
-                      }
-                    : w
-                ),
-              });
-            }
-          }
-
-          get().resolveAttention("att-priya");
-
-          const remaining = get().reviewQueue.filter(
-            (r) => r.status === "pending" && r.id !== id
-          );
-          set({ selectedReviewId: remaining[0]?.id ?? null });
-          get().recomputeMode();
+          get().pollSlackOutbox(id, outboxId);
         } catch (err) {
           if (!get().confirmModal) return;
           const current = get().confirmModal;
@@ -648,11 +597,174 @@ export const useControlStore = create<ControlState>()(
                 error:
                   err instanceof Error
                     ? err.message
-                    : "Network error posting to Slack. Nothing was marked approved.",
+                    : "Network error writing Slack outbox. Review stays pending.",
               },
             });
           }
         }
+      },
+
+      pollSlackOutbox: (reviewId, outboxId) => {
+        let attempts = 0;
+        const maxAttempts = 120; // ~4 min at 2s
+        const tick = async () => {
+          attempts += 1;
+          const item = get().reviewQueue.find((r) => r.id === reviewId);
+          if (!item || item.slackOutboxId !== outboxId) return;
+          if (item.status === "approved" || item.status === "rejected") return;
+          if (item.slackQueueStatus === "posted" || item.slackQueueStatus === "failed")
+            return;
+
+          try {
+            const res = await fetch(`/api/slack/outbox/${outboxId}`);
+            if (res.ok) {
+              const data = (await res.json()) as {
+                item?: {
+                  status?: string;
+                  reply_ts?: string;
+                  permalink?: string;
+                  channel_id?: string;
+                  error?: string;
+                };
+              };
+              const ob = data.item;
+              if (ob?.status === "posted") {
+                get().applySlackOutboxPosted(reviewId, {
+                  ts: ob.reply_ts,
+                  channel: ob.channel_id,
+                  permalink: ob.permalink,
+                });
+                return;
+              }
+              if (ob?.status === "failed") {
+                get().applySlackOutboxFailed(reviewId, ob.error);
+                return;
+              }
+            }
+          } catch {
+            // keep polling
+          }
+
+          if (attempts < maxAttempts) {
+            window.setTimeout(() => {
+              void tick();
+            }, 2000);
+          }
+        };
+        window.setTimeout(() => {
+          void tick();
+        }, 1500);
+      },
+
+      applySlackOutboxPosted: (id, reply) => {
+        const item = get().reviewQueue.find((r) => r.id === id);
+        if (!item) return;
+        if (item.status === "approved") return;
+
+        const textBody = item.draftText ?? "";
+
+        set({
+          reviewQueue: get().reviewQueue.map((r) =>
+            r.id === id
+              ? {
+                  ...r,
+                  status: "approved",
+                  slackQueueStatus: "posted",
+                  postedReply: reply.ts
+                    ? {
+                        ts: reply.ts,
+                        channel: reply.channel,
+                        permalink: reply.permalink,
+                      }
+                    : r.postedReply,
+                }
+              : r
+          ),
+        });
+
+        if (textBody) {
+          const sources = { ...get().sources };
+          const thread = sources.slack["slack-infra"];
+          if (thread) {
+            sources.slack = {
+              ...sources.slack,
+              "slack-infra": {
+                ...thread,
+                messages: [
+                  ...thread.messages,
+                  {
+                    author: "You",
+                    time: "just now",
+                    body: textBody,
+                  },
+                ],
+              },
+            };
+            set({ sources });
+          }
+        }
+
+        if (item.workstreamId) {
+          const ws = get().workstreams.find((w) => w.id === item.workstreamId);
+          if (ws) {
+            get().updateCheckpoint(
+              item.workstreamId,
+              ws.checkpoint +
+                ` Posted Slack reply to Priya` +
+                (reply.ts ? ` (ts ${reply.ts})` : "") +
+                `.`
+            );
+            set({
+              workstreams: get().workstreams.map((w) =>
+                w.id === item.workstreamId
+                  ? {
+                      ...w,
+                      changed: [
+                        "Replied to Priya in #control-e2e (E2E harness via MCP).",
+                        ...w.changed,
+                      ],
+                    }
+                  : w
+              ),
+            });
+          }
+        }
+
+        get().resolveAttention("att-priya");
+
+        const remaining = get().reviewQueue.filter(
+          (r) =>
+            (r.status === "pending" || r.status === "queued") && r.id !== id
+        );
+        set({ selectedReviewId: remaining[0]?.id ?? null });
+        get().recomputeMode();
+      },
+
+      applySlackOutboxFailed: (id, error) => {
+        const item = get().reviewQueue.find((r) => r.id === id);
+        if (!item) return;
+        // Fail closed: return to pending so the user can retry Approve.
+        set({
+          reviewQueue: get().reviewQueue.map((r) =>
+            r.id === id
+              ? {
+                  ...r,
+                  status: "pending",
+                  slackQueueStatus: "failed",
+                  // keep slackOutboxId for diagnostics
+                }
+              : r
+          ),
+        });
+        get().openConfirm({
+          title: "Slack outbox failed",
+          body: item.draftText ?? "",
+          confirmLabel: "Dismiss",
+          subtitle:
+            error ||
+            "MCP poster reported failure. Review is pending again — nothing was posted.",
+          onConfirm: () => get().closeConfirm(),
+        });
       },
 
       approveAgentPermission: (agentId) => {

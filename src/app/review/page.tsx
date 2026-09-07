@@ -9,10 +9,16 @@ export default function ReviewPage() {
   const queue = useControlStore((s) => s.reviewQueue);
   const selectedId = useControlStore((s) => s.selectedReviewId);
   const setSelected = useControlStore((s) => s.setSelectedReview);
-  const pending = queue.filter((r) => r.status === "pending");
+  const open = queue.filter(
+    (r) => r.status === "pending" || r.status === "queued"
+  );
   const selected =
-    queue.find((r) => r.id === selectedId && r.status === "pending") ??
-    pending[0] ??
+    queue.find(
+      (r) =>
+        r.id === selectedId &&
+        (r.status === "pending" || r.status === "queued")
+    ) ??
+    open[0] ??
     null;
 
   useEffect(() => {
@@ -30,13 +36,13 @@ export default function ReviewPage() {
             Prepared work · judgment required
           </p>
         </div>
-        {pending.length === 0 ? (
+        {open.length === 0 ? (
           <div className="px-4 py-8 text-[13px] text-muted leading-5">
             Nothing to review. Agents will wait here.
           </div>
         ) : (
           <ul className="p-2 space-y-1">
-            {pending.map((item) => (
+            {open.map((item) => (
               <li key={item.id}>
                 <button
                   type="button"
@@ -47,8 +53,15 @@ export default function ReviewPage() {
                       : "hover:bg-raised/60"
                   }`}
                 >
-                  <div className="text-[13px] font-medium leading-5">
-                    {item.title}
+                  <div className="flex items-center gap-2">
+                    <div className="text-[13px] font-medium leading-5">
+                      {item.title}
+                    </div>
+                    {item.status === "queued" ? (
+                      <span className="chip text-[10px] text-review">
+                        queued
+                      </span>
+                    ) : null}
                   </div>
                   <div className="text-[11px] text-muted mt-1">{item.label}</div>
                 </button>

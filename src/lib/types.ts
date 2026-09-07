@@ -104,9 +104,13 @@ export interface ReviewItem {
   slackTarget?: SlackTarget;
   /** Optional provenance pointing at the harness / mock source. */
   provenance?: Provenance[];
-  /** Filled after a successful chat.postMessage. */
+  /** Filled after MCP poster acks the outbox item. */
   postedReply?: PostedSlackReply;
-  status: "pending" | "approved" | "rejected" | "edited";
+  /** Durable outbox id while awaiting Slack MCP poster. */
+  slackOutboxId?: string;
+  /** Queue status mirrored from outbox until ack/fail. */
+  slackQueueStatus?: "pending" | "posted" | "failed";
+  status: "pending" | "queued" | "approved" | "rejected" | "edited";
   agentId?: string;
 }
 

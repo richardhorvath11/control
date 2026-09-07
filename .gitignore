@@ -5,3 +5,5 @@ out
 *.log
 .env
 .env*.local
+.control/
+tsconfig.tsbuildinfo

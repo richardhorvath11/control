@@ -70,7 +70,8 @@ export default function SlackSourcePage() {
       </div>
       <p className="text-[11px] text-muted">
         Mocked source of truth for the prototype UI. Approve on the Priya draft
-        posts a real reply to the harness thread when SLACK_BOT_TOKEN is set.
+        queues an outbox item; Grok posts via Slack MCP and acks — then this
+        mock thread mirrors the reply.
       </p>
     </div>
   );
