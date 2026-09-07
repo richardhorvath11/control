@@ -11,7 +11,7 @@ import type {
   SeedData,
   Workstream,
 } from "./types";
-import { GITHUB_NEEDS_YOU_CAP } from "./github-inbox";
+import { GITHUB_NEEDS_YOU_CAP } from "./github-constants";
 
 const initial = seed as SeedData;
 

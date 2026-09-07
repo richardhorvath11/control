@@ -1,5 +1,7 @@
 import { promises as fs } from "fs";
 import path from "path";
+import { GITHUB_NEEDS_YOU_CAP } from "./github-constants";
+export { GITHUB_NEEDS_YOU_CAP };
 
 export const CONTROL_DIR = path.join(process.cwd(), ".control");
 export const INBOX_DIR = path.join(CONTROL_DIR, "github-inbox");
@@ -99,8 +101,6 @@ const DEFAULT_WATCH: WatchConfig = {
   workstreamId: "ws-cred",
 };
 
-/** Hard cap on GitHub-originated Needs-you Attention Items. Ingest unlimited. */
-export const GITHUB_NEEDS_YOU_CAP = 5;
 
 function safeId(id: string): boolean {
   // Allow typical event ids from agents (hex, uuid, slug)

@@ -102,7 +102,7 @@ CUT: opened/merged/closed, issues, comment floods, labels, assigns, org-wide wat
 | `review.requested` | Needs you if `action_on_user`, else FYI |
 | `review.changes_requested` | Needs you (prefer Now) |
 
-Hard rules: cap GitHub-originated Needs-you at **2**; dedupe by event `id` and by `(type, pr_number, head_sha)`; no toasts; Review badge behavior unchanged.
+Hard rules: cap GitHub-originated Needs-you at **5**; dedupe by event `id` and by `(type, pr_number, head_sha)`; no toasts; Review badge behavior unchanged.
 
 ### Inbox API
 
@@ -134,7 +134,7 @@ Durable files: `.control/github-inbox/<id>.json` (under gitignored `.control/`).
 | `GET` | `/api/github/inbox` | — | `{ ok, watch, needsYouCap, githubNeedsYou, items }` |
 | `POST` | `/api/github/inbox` | `GitHubInboxEvent` | `{ ok, event, applied, duplicate?, item }` |
 
-Malformed POST → **4xx** and does not write inbox state. Offline seed Needs-you stays at the Monday 2 items until events arrive. Client polls the inbox and merges into the persisted Zustand store. When GitHub Needs-you would exceed 2, older GitHub Needs-you demote to FYI.
+Malformed POST → **4xx** and does not write inbox state. Offline seed Needs-you stays at the Monday 2 items until events arrive. Client polls the inbox and merges into the persisted Zustand store. When GitHub Needs-you would exceed 5, older GitHub Needs-you demote to FYI.
 
 See `scripts/github-watcher.md` for the agent sync sketch.
 
