@@ -37,7 +37,9 @@ interface ControlState {
     body: string;
     confirmLabel: string;
     subtitle?: string;
-    onConfirm: () => void;
+    onConfirm: () => void | Promise<void>;
+    loading?: boolean;
+    error?: string;
   };
   launcherOpen: boolean;
   _hasHydrated: boolean;
@@ -66,7 +68,7 @@ interface ControlState {
   applyApproveReview: (id: string) => void;
   rejectReview: (id: string) => void;
   editReviewDraft: (id: string, text: string) => void;
-  confirmPostSlack: (id: string) => void;
+  confirmPostSlack: (id: string) => Promise<void>;
 
   approveAgentPermission: (agentId: string) => void;
   dismissAgentPermission: (agentId: string) => void;
@@ -394,10 +396,16 @@ export const useControlStore = create<ControlState>()(
         if (!item || item.status !== "pending") return;
 
         if (item.kind === "slack_draft") {
+          const channel =
+            item.slackTarget?.channelName ??
+            item.targetLabel ??
+            "#control-e2e";
           get().openConfirm({
-            title: "Post to mocked Slack?",
+            title: "Post to Slack?",
             body: item.draftText ?? "",
-            confirmLabel: "Post to #infra",
+            confirmLabel: `Post to ${channel}`,
+            subtitle:
+              "Real Slack write to the E2E harness thread — nothing posts until you confirm. Cancel leaves Review unchanged.",
             onConfirm: () => get().confirmPostSlack(id),
           });
           return;
@@ -493,66 +501,158 @@ export const useControlStore = create<ControlState>()(
         });
       },
 
-      confirmPostSlack: (id) => {
+      confirmPostSlack: async (id) => {
         const item = get().reviewQueue.find((r) => r.id === id);
-        set({
-          reviewQueue: get().reviewQueue.map((r) =>
-            r.id === id ? { ...r, status: "approved" } : r
-          ),
-          confirmModal: null,
-        });
+        if (!item || item.status !== "pending") return;
 
-        // Append to mocked slack
-        if (item?.draftText) {
-          const sources = { ...get().sources };
-          const thread = sources.slack["slack-infra"];
-          if (thread) {
-            sources.slack = {
-              ...sources.slack,
-              "slack-infra": {
-                ...thread,
-                messages: [
-                  ...thread.messages,
-                  {
-                    author: "You",
-                    time: "9:12 AM",
-                    body: item.draftText,
-                  },
-                ],
-              },
-            };
-            set({ sources });
-          }
-        }
+        const textBody = item.draftText ?? "";
+        const channelId =
+          item.slackTarget?.channelId ?? "C0BVCSA4T2P";
+        const threadTs =
+          item.slackTarget?.threadTs ?? "1788808933.776429";
 
-        if (item?.workstreamId) {
-          get().updateCheckpoint(
-            item.workstreamId,
-            get().workstreams.find((w) => w.id === item.workstreamId)!
-              .checkpoint + ` Posted Slack reply to Priya.`
-          );
+        const modal = get().confirmModal;
+        if (modal) {
           set({
-            workstreams: get().workstreams.map((w) =>
-              w.id === item.workstreamId
-                ? {
-                    ...w,
-                    changed: [
-                      "Replied to Priya in #infra about deploy impact.",
-                      ...w.changed,
-                    ],
-                  }
-                : w
-            ),
+            confirmModal: { ...modal, loading: true, error: undefined },
           });
         }
 
-        get().resolveAttention("att-priya");
+        try {
+          const res = await fetch("/api/slack/post", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: textBody,
+              channelId,
+              threadTs,
+            }),
+          });
 
-        const remaining = get().reviewQueue.filter(
-          (r) => r.status === "pending" && r.id !== id
-        );
-        set({ selectedReviewId: remaining[0]?.id ?? null });
-        get().recomputeMode();
+          let data: {
+            error?: string;
+            ts?: string;
+            channel?: string;
+            permalink?: string;
+          } = {};
+          try {
+            data = (await res.json()) as typeof data;
+          } catch {
+            data = {};
+          }
+
+          // User cancelled while in flight — do not apply success or reopen.
+          if (!get().confirmModal) return;
+
+          if (!res.ok) {
+            const current = get().confirmModal;
+            if (current) {
+              set({
+                confirmModal: {
+                  ...current,
+                  loading: false,
+                  error:
+                    data.error ||
+                    `Slack post failed (HTTP ${res.status}). Nothing was marked approved.`,
+                },
+              });
+            }
+            return;
+          }
+
+          // Success — only now approve + update local mock UI.
+          set({
+            reviewQueue: get().reviewQueue.map((r) =>
+              r.id === id
+                ? {
+                    ...r,
+                    status: "approved",
+                    postedReply: data.ts
+                      ? {
+                          ts: data.ts,
+                          channel: data.channel,
+                          permalink: data.permalink,
+                        }
+                      : r.postedReply,
+                  }
+                : r
+            ),
+            confirmModal: null,
+          });
+
+          if (textBody) {
+            const sources = { ...get().sources };
+            const thread = sources.slack["slack-infra"];
+            if (thread) {
+              sources.slack = {
+                ...sources.slack,
+                "slack-infra": {
+                  ...thread,
+                  messages: [
+                    ...thread.messages,
+                    {
+                      author: "You",
+                      time: "just now",
+                      body: textBody,
+                    },
+                  ],
+                },
+              };
+              set({ sources });
+            }
+          }
+
+          if (item.workstreamId) {
+            const ws = get().workstreams.find(
+              (w) => w.id === item.workstreamId
+            );
+            if (ws) {
+              get().updateCheckpoint(
+                item.workstreamId,
+                ws.checkpoint +
+                  ` Posted Slack reply to Priya` +
+                  (data.ts ? ` (ts ${data.ts})` : "") +
+                  `.`
+              );
+              set({
+                workstreams: get().workstreams.map((w) =>
+                  w.id === item.workstreamId
+                    ? {
+                        ...w,
+                        changed: [
+                          "Replied to Priya in #control-e2e (E2E harness).",
+                          ...w.changed,
+                        ],
+                      }
+                    : w
+                ),
+              });
+            }
+          }
+
+          get().resolveAttention("att-priya");
+
+          const remaining = get().reviewQueue.filter(
+            (r) => r.status === "pending" && r.id !== id
+          );
+          set({ selectedReviewId: remaining[0]?.id ?? null });
+          get().recomputeMode();
+        } catch (err) {
+          if (!get().confirmModal) return;
+          const current = get().confirmModal;
+          if (current) {
+            set({
+              confirmModal: {
+                ...current,
+                loading: false,
+                error:
+                  err instanceof Error
+                    ? err.message
+                    : "Network error posting to Slack. Nothing was marked approved.",
+              },
+            });
+          }
+        }
       },
 
       approveAgentPermission: (agentId) => {

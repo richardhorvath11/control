@@ -5,11 +5,23 @@
   "focusWorkstreamId": null,
   "dayStrip": {
     "meetings": [
-      { "time": "9:30", "title": "Standup", "id": "cal-standup" },
-      { "time": "2:00", "title": "Design review", "id": "cal-design" },
-      { "time": "4:00", "title": "1:1 with Sam", "id": "cal-sam" }
+      {
+        "time": "9:30",
+        "title": "Standup",
+        "id": "cal-standup"
+      },
+      {
+        "time": "2:00",
+        "title": "Design review",
+        "id": "cal-design"
+      },
+      {
+        "time": "4:00",
+        "title": "1:1 with Sam",
+        "id": "cal-sam"
+      }
     ],
-    "focusBlock": "10:00–1:00 Focus"
+    "focusBlock": "10:00\u20131:00 Focus"
   },
   "workstreams": [
     {
@@ -17,14 +29,14 @@
       "name": "Staging credential rotation",
       "phase": "Human review",
       "objective": "Rotate staging credentials without blocking deploys.",
-      "next": "Decide whether to keep five retries (conflict with RFC §4.2?).",
+      "next": "Decide whether to keep five retries (conflict with RFC \u00a74.2?).",
       "changed": [
         "Review agent finished Sunday with 3 findings on fix/staging-cred-rotation.",
         "Priya asked in #infra this morning about deploy impact today."
       ],
       "waitingOn": "you",
       "lastActive": "Friday 6:41 PM",
-      "checkpoint": "You left Friday after pushing the rotation PR. The retry loop still uses five attempts — RFC §4.2 caps at three for staging. Sunday's independent review flagged that conflict first. Priya's deploy question landed this morning and will come up in standup. Your next judgment: keep five retries with an RFC exception, or drop to three and re-run CI.",
+      "checkpoint": "You left Friday after pushing the rotation PR. The retry loop still uses five attempts \u2014 RFC \u00a74.2 caps at three for staging. Sunday's independent review flagged that conflict first. Priya's deploy question landed this morning and will come up in standup. Your next judgment: keep five retries with an RFC exception, or drop to three and re-run CI.",
       "artifacts": [
         {
           "id": "art-pr",
@@ -37,18 +49,20 @@
           "id": "art-rfc",
           "kind": "rfc",
           "label": "RFC",
-          "detail": "Credential lifecycle · §4.2 Retry budget",
+          "detail": "Credential lifecycle \u00b7 \u00a74.2 Retry budget",
           "sourceId": "rfc-cred"
         },
         {
           "id": "art-slack",
           "kind": "slack",
           "label": "Slack",
-          "detail": "#infra · Priya deploy question",
+          "detail": "#infra \u00b7 Priya deploy question",
           "sourceId": "slack-infra"
         }
       ],
-      "agentIds": ["agent-rotation-review"],
+      "agentIds": [
+        "agent-rotation-review"
+      ],
       "status": "blocked-on-you"
     },
     {
@@ -58,7 +72,7 @@
       "objective": "Ship a ranking experiment once design lands on Maya's proposal.",
       "next": "Review Maya's ranking doc after design review.",
       "changed": [
-        "Literature-scan agent still running — do not interrupt.",
+        "Literature-scan agent still running \u2014 do not interrupt.",
         "Waiting on design before unpausing implementation."
       ],
       "waitingOn": "design",
@@ -69,11 +83,13 @@
           "id": "art-rank-doc",
           "kind": "rfc",
           "label": "Doc",
-          "detail": "Maya · Ranking experiment proposal",
+          "detail": "Maya \u00b7 Ranking experiment proposal",
           "sourceId": "rfc-ranking"
         }
       ],
-      "agentIds": ["agent-literature"],
+      "agentIds": [
+        "agent-literature"
+      ],
       "status": "idle"
     },
     {
@@ -81,7 +97,7 @@
       "name": "On-call runbook rewrite",
       "phase": "Draft",
       "objective": "Rewrite the on-call runbook so a new engineer can take a page without tribal knowledge.",
-      "next": "Not today unless Now is clear — pick up draft outline.",
+      "next": "Not today unless Now is clear \u2014 pick up draft outline.",
       "changed": [
         "Untouched since Thursday.",
         "Outline-publish agent blocked on permission to create a doc."
@@ -90,7 +106,9 @@
       "lastActive": "Thursday 11:05 AM",
       "checkpoint": "Quiet draft. Outline agent wants to publish a Google Doc and is blocked on permission. Not today's problem unless the morning clears.",
       "artifacts": [],
-      "agentIds": ["agent-runbook"],
+      "agentIds": [
+        "agent-runbook"
+      ],
       "status": "idle"
     }
   ],
@@ -99,15 +117,15 @@
       "id": "att-priya",
       "routing": "now",
       "title": "Priya (#infra): does rotation block deploys today?",
-      "why": "Standup in 18 min — this will come up.",
+      "why": "Standup in 18 min \u2014 this will come up.",
       "workstreamId": "ws-cred",
       "suggestedAction": "delegate",
       "provenance": [
         {
           "kind": "slack",
-          "title": "#infra · Priya",
-          "locator": "this morning 8:54 AM",
-          "excerpt": "Hey — does the staging cred rotation block deploys today? Need to know before standup.",
+          "title": "#infra \u00b7 Priya",
+          "locator": "E2E C0BVCSA4T2P / 1788808933.776429 \u00b7 mock 8:54 AM",
+          "excerpt": "[E2E fixture \u00b7 Priya \u00b7 #infra] Does staging credential rotation block deploys today? Need an answer before standup.",
           "sourceId": "slack-infra",
           "timestamp": "8:54 AM"
         }
@@ -132,8 +150,8 @@
         },
         {
           "kind": "rfc",
-          "title": "Credential lifecycle §4.2",
-          "locator": "§4.2 Retry budget",
+          "title": "Credential lifecycle \u00a74.2",
+          "locator": "\u00a74.2 Retry budget",
           "excerpt": "Staging rotations MUST NOT exceed three retries before failing closed.",
           "sourceId": "rfc-cred"
         }
@@ -149,30 +167,30 @@
       "title": "Independent review of rotation PR",
       "workstreamId": "ws-cred",
       "label": "Analysis, not truth",
-      "analysisNote": "Prepared analysis of fix/staging-cred-rotation. Findings are claims with evidence — not an approval.",
+      "analysisNote": "Prepared analysis of fix/staging-cred-rotation. Findings are claims with evidence \u2014 not an approval.",
       "findings": [
         {
           "id": "f1",
-          "title": "Retry behavior may conflict with RFC §4.2",
-          "body": "Implementation sets MAX_RETRIES = 5. RFC §4.2 requires staging rotations fail closed after three retries. Test rotateCreds.retries.spec.ts asserts five attempts. Two callers inherit the constant.",
+          "title": "Retry behavior may conflict with RFC \u00a74.2",
+          "body": "Implementation sets MAX_RETRIES = 5. RFC \u00a74.2 requires staging rotations fail closed after three retries. Test rotateCreds.retries.spec.ts asserts five attempts. Two callers inherit the constant.",
           "evidence": [
             {
               "kind": "rfc",
-              "title": "RFC · Credential lifecycle · §4.2",
-              "locator": "§4.2 Retry budget",
+              "title": "RFC \u00b7 Credential lifecycle \u00b7 \u00a74.2",
+              "locator": "\u00a74.2 Retry budget",
               "excerpt": "Staging rotations MUST NOT exceed three retries before failing closed.",
               "sourceId": "rfc-cred"
             },
             {
               "kind": "github",
-              "title": "retry.ts:48 · MAX_RETRIES = 5",
+              "title": "retry.ts:48 \u00b7 MAX_RETRIES = 5",
               "locator": "packages/creds/src/retry.ts:48",
               "excerpt": "const MAX_RETRIES = 5; // staging rotation",
               "sourceId": "pr-cred"
             },
             {
               "kind": "github",
-              "title": "Test · rotateCreds.retries.spec.ts",
+              "title": "Test \u00b7 rotateCreds.retries.spec.ts",
               "locator": "packages/creds/src/retry.ts + rotateCreds.retries.spec.ts",
               "excerpt": "expect(attempts).toBe(5)",
               "sourceId": "pr-cred"
@@ -186,7 +204,7 @@
           "evidence": [
             {
               "kind": "github",
-              "title": "lock.ts · acquireDeployLock",
+              "title": "lock.ts \u00b7 acquireDeployLock",
               "locator": "packages/creds/src/lock.ts:22",
               "excerpt": "await acquireDeployLock({ ttlMs: MAX_RETRIES * 18_000 });",
               "sourceId": "pr-cred"
@@ -196,19 +214,19 @@
         {
           "id": "f3",
           "title": "No rollback path if third-party secret store lags",
-          "body": "If Vault accepts the write but the staging runtime still serves the old secret, the PR has no documented rollback. RFC §5 mentions a dual-publish window; this change does not implement it.",
+          "body": "If Vault accepts the write but the staging runtime still serves the old secret, the PR has no documented rollback. RFC \u00a75 mentions a dual-publish window; this change does not implement it.",
           "evidence": [
             {
               "kind": "rfc",
-              "title": "RFC · §5 Dual-publish window",
-              "locator": "§5",
+              "title": "RFC \u00b7 \u00a75 Dual-publish window",
+              "locator": "\u00a75",
               "excerpt": "New and old credentials MUST both validate for at least one deploy cycle.",
               "sourceId": "rfc-cred"
             }
           ]
         }
       ],
-      "scopeFooter": "Examined 8 files · 2 callers · 1 RFC · 14 tests. Absence of findings is not approval.",
+      "scopeFooter": "Examined 8 files \u00b7 2 callers \u00b7 1 RFC \u00b7 14 tests. Absence of findings is not approval.",
       "status": "pending",
       "agentId": "agent-rotation-review"
     },
@@ -218,12 +236,29 @@
       "title": "Draft Slack reply to Priya",
       "workstreamId": "ws-cred",
       "label": "Draft reply",
-      "analysisNote": "Proposed reply for #infra. Nothing is posted until you confirm.",
+      "analysisNote": "Proposed reply for the real #control-e2e harness thread (and mirrored in the mocked #infra source). Nothing is posted until you confirm.",
       "findings": [],
-      "scopeFooter": "Draft only — posting requires explicit confirmation.",
-      "draftText": "Priya — short answer: it shouldn't block deploys if we land the retry-limit fix this morning. The PR currently holds the staging deploy lock for the full retry window; I'm deciding whether to drop MAX_RETRIES from 5→3 to match RFC §4.2. I'll update this thread before standup either way.",
-      "targetLabel": "#infra · reply to Priya",
-      "status": "pending"
+      "scopeFooter": "Draft only \u2014 posting requires explicit confirmation. Confirm calls Slack chat.postMessage on the E2E fixture thread.",
+      "draftText": "Priya \u2014 short answer: it shouldn't block deploys if we land the retry-limit fix this morning. The PR currently holds the staging deploy lock for the full retry window; I'm deciding whether to drop MAX_RETRIES from 5\u21923 to match RFC \u00a74.2. I'll update this thread before standup either way.",
+      "targetLabel": "#control-e2e \u00b7 reply to Priya (E2E harness)",
+      "status": "pending",
+      "slackTarget": {
+        "workspace": "connect-8w75152",
+        "channelId": "C0BVCSA4T2P",
+        "threadTs": "1788808933.776429",
+        "permalink": "https://connect-8w75152.slack.com/archives/C0BVCSA4T2P/p1788808933776429",
+        "channelName": "#control-e2e"
+      },
+      "provenance": [
+        {
+          "kind": "slack",
+          "title": "#control-e2e \u00b7 Priya fixture",
+          "locator": "C0BVCSA4T2P \u00b7 ts 1788808933.776429",
+          "excerpt": "[E2E fixture \u00b7 Priya \u00b7 #infra] Does staging credential rotation block deploys today? Need an answer before standup.",
+          "sourceId": "slack-infra",
+          "timestamp": "1788808933.776429"
+        }
+      ]
     }
   ],
   "agents": [
@@ -232,7 +267,7 @@
       "name": "Rotation review",
       "status": "Complete",
       "workstreamId": "ws-cred",
-      "detail": "Independent review of fix/staging-cred-rotation — 3 findings ready in Review.",
+      "detail": "Independent review of fix/staging-cred-rotation \u2014 3 findings ready in Review.",
       "completedAt": "Sunday 4:12 PM",
       "needsReview": true,
       "reviewItemId": "rev-pr"
@@ -242,7 +277,7 @@
       "name": "Ranking literature scan",
       "status": "Running",
       "workstreamId": "ws-ranking",
-      "detail": "Scanning ranking literature for Maya's experiment — do not interrupt.",
+      "detail": "Scanning ranking literature for Maya's experiment \u2014 do not interrupt.",
       "startedAt": "Sunday 9:00 PM"
     },
     {
@@ -270,33 +305,40 @@
     }
   ],
   "fyi": [
-    "3 meetings today · Standup 9:30, Design review 2:00, 1:1 Sam 4:00",
-    "~5h focus available after standup (10:00–1:00)",
+    "3 meetings today \u00b7 Standup 9:30, Design review 2:00, 1:1 Sam 4:00",
+    "~5h focus available after standup (10:00\u20131:00)",
     "Ranking literature-scan agent still running",
     "On-call runbook untouched since Thursday"
   ],
   "sources": {
     "slack": {
       "slack-infra": {
-        "channel": "#infra",
-        "title": "Staging credential rotation — deploy impact",
+        "channel": "#infra (mock) \u00b7 E2E target #control-e2e",
+        "title": "Staging credential rotation \u2014 deploy impact",
         "messages": [
           {
             "author": "Priya Chen",
             "time": "8:54 AM",
-            "body": "Hey — does the staging cred rotation block deploys today? Need to know before standup. Nightingale has a staging push queued for ~11."
+            "body": "[E2E fixture \u00b7 Priya \u00b7 #infra] Does staging credential rotation block deploys today? Need an answer before standup.\n\n(Mock mirror) Nightingale has a staging push queued for ~11."
           },
           {
             "author": "Marcus Wei",
             "time": "8:57 AM",
-            "body": "Following — we hit the deploy lock Friday during a dry-run. Curious if that's still the case."
+            "body": "Following \u2014 we hit the deploy lock Friday during a dry-run. Curious if that's still the case."
           },
           {
             "author": "Priya Chen",
             "time": "9:01 AM",
-            "body": "@you whenever you have a sec — even a yes/no helps."
+            "body": "@you whenever you have a sec \u2014 even a yes/no helps."
           }
-        ]
+        ],
+        "harness": {
+          "workspace": "connect-8w75152",
+          "channelId": "C0BVCSA4T2P",
+          "threadTs": "1788808933.776429",
+          "permalink": "https://connect-8w75152.slack.com/archives/C0BVCSA4T2P/p1788808933776429",
+          "fixtureText": "[E2E fixture \u00b7 Priya \u00b7 #infra] Does staging credential rotation block deploys today? Need an answer before standup."
+        }
       }
     },
     "github": {
@@ -304,13 +346,25 @@
         "repo": "acme/platform",
         "title": "fix: staging credential rotation",
         "branch": "fix/staging-cred-rotation",
-        "status": "Open · CI green · 2 reviewers requested",
+        "status": "Open \u00b7 CI green \u00b7 2 reviewers requested",
         "description": "Rotates staging credentials via Vault without requiring a full cluster bounce. Introduces retry + deploy-lock coordination.",
         "ci": [
-          { "name": "lint", "status": "passed" },
-          { "name": "unit", "status": "passed" },
-          { "name": "integration-staging", "status": "passed" },
-          { "name": "policy-rfc-check", "status": "passed*" }
+          {
+            "name": "lint",
+            "status": "passed"
+          },
+          {
+            "name": "unit",
+            "status": "passed"
+          },
+          {
+            "name": "integration-staging",
+            "status": "passed"
+          },
+          {
+            "name": "policy-rfc-check",
+            "status": "passed*"
+          }
         ],
         "files": [
           {
@@ -331,8 +385,8 @@
     "rfc": {
       "rfc-cred": {
         "title": "RFC: Credential lifecycle",
-        "section": "§4.2 Retry budget",
-        "body": "## §4.2 Retry budget\n\nStaging rotations MUST NOT exceed three retries before failing closed. Each retry may wait at most 18 seconds. The deploy lock MUST NOT be held longer than the maximum retry window (3 × 18s = 54s).\n\nRationale: longer lock windows starve nightingale and partner staging deploys. Production may use a higher budget under incident commander approval.\n\n## §5 Dual-publish window\n\nNew and old credentials MUST both validate for at least one deploy cycle before the old secret is revoked. Implementations that skip dual-publish require an explicit RFC exception filed in #infra."
+        "section": "\u00a74.2 Retry budget",
+        "body": "## \u00a74.2 Retry budget\n\nStaging rotations MUST NOT exceed three retries before failing closed. Each retry may wait at most 18 seconds. The deploy lock MUST NOT be held longer than the maximum retry window (3 \u00d7 18s = 54s).\n\nRationale: longer lock windows starve nightingale and partner staging deploys. Production may use a higher budget under incident commander approval.\n\n## \u00a75 Dual-publish window\n\nNew and old credentials MUST both validate for at least one deploy cycle before the old secret is revoked. Implementations that skip dual-publish require an explicit RFC exception filed in #infra."
       },
       "rfc-ranking": {
         "title": "Ranking experiment proposal (Maya)",
@@ -346,8 +400,10 @@
         "title": "Standup",
         "start": "9:30 AM",
         "end": "9:45 AM",
-        "attendees": ["Engineering"],
-        "location": "Zoom · Daily",
+        "attendees": [
+          "Engineering"
+        ],
+        "location": "Zoom \u00b7 Daily",
         "notes": " cred rotation deploy impact likely to come up."
       },
       "cal-design": {
@@ -355,8 +411,12 @@
         "title": "Design review",
         "start": "2:00 PM",
         "end": "2:45 PM",
-        "attendees": ["Maya", "Design", "You"],
-        "location": "Conf · Orion",
+        "attendees": [
+          "Maya",
+          "Design",
+          "You"
+        ],
+        "location": "Conf \u00b7 Orion",
         "notes": "Maya's ranking experiment proposal."
       },
       "cal-sam": {
@@ -364,7 +424,9 @@
         "title": "1:1 with Sam",
         "start": "4:00 PM",
         "end": "4:30 PM",
-        "attendees": ["Sam"],
+        "attendees": [
+          "Sam"
+        ],
         "location": "Zoom",
         "notes": "Weekly 1:1."
       },
@@ -373,7 +435,9 @@
         "title": "Focus block",
         "start": "10:00 AM",
         "end": "1:00 PM",
-        "attendees": ["You"],
+        "attendees": [
+          "You"
+        ],
         "location": "Hold",
         "notes": "~5h focus after standup."
       }

@@ -37,8 +37,36 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
 
       {item.kind === "slack_draft" ? (
         <section className="panel p-5 space-y-4">
-          <div className="text-[12px] text-muted">
-            Target: {item.targetLabel}
+          <div className="text-[12px] text-muted space-y-1">
+            <div>Target: {item.targetLabel}</div>
+            {item.slackTarget ? (
+              <div className="font-mono text-[11px]">
+                {item.slackTarget.channelId} · thread_ts{" "}
+                {item.slackTarget.threadTs}
+                {" · "}
+                <a
+                  href={item.slackTarget.permalink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-review hover:underline"
+                >
+                  open harness thread
+                </a>
+              </div>
+            ) : null}
+            {item.postedReply?.permalink ? (
+              <div className="text-[11px] text-running">
+                Posted{" "}
+                <a
+                  href={item.postedReply.permalink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="hover:underline"
+                >
+                  reply {item.postedReply.ts}
+                </a>
+              </div>
+            ) : null}
           </div>
           {editing ? (
             <textarea

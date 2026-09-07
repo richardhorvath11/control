@@ -74,6 +74,21 @@ export interface Finding {
   evidence: Provenance[];
 }
 
+/** Real Slack E2E harness target for slack_draft posts. */
+export interface SlackTarget {
+  workspace: string;
+  channelId: string;
+  threadTs: string;
+  permalink: string;
+  channelName?: string;
+}
+
+export interface PostedSlackReply {
+  ts: string;
+  channel?: string;
+  permalink?: string;
+}
+
 export interface ReviewItem {
   id: string;
   kind: ReviewKind;
@@ -85,6 +100,12 @@ export interface ReviewItem {
   scopeFooter: string;
   draftText?: string;
   targetLabel?: string;
+  /** Real Slack thread to post into (E2E harness). */
+  slackTarget?: SlackTarget;
+  /** Optional provenance pointing at the harness / mock source. */
+  provenance?: Provenance[];
+  /** Filled after a successful chat.postMessage. */
+  postedReply?: PostedSlackReply;
   status: "pending" | "approved" | "rejected" | "edited";
   agentId?: string;
 }
@@ -112,6 +133,19 @@ export interface CalendarEvent {
   notes?: string;
 }
 
+export interface SlackThreadSource {
+  channel: string;
+  title: string;
+  messages: { author: string; time: string; body: string }[];
+  harness?: {
+    workspace: string;
+    channelId: string;
+    threadTs: string;
+    permalink: string;
+    fixtureText: string;
+  };
+}
+
 export interface SeedData {
   clock: string;
   clockLabel: string;
@@ -134,14 +168,7 @@ export interface SeedData {
   }[];
   fyi: string[];
   sources: {
-    slack: Record<
-      string,
-      {
-        channel: string;
-        title: string;
-        messages: { author: string; time: string; body: string }[];
-      }
-    >;
+    slack: Record<string, SlackThreadSource>;
     github: Record<
       string,
       {

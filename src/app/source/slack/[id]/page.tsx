@@ -32,6 +32,29 @@ export default function SlackSourcePage() {
           ← Back
         </Link>
       </div>
+      {thread.harness ? (
+        <div className="row px-4 py-3 text-[12px] leading-5 text-muted space-y-1">
+          <div>
+            Real E2E post target:{" "}
+            <span className="font-mono text-text">
+              {thread.harness.channelId}
+            </span>{" "}
+            · thread_ts{" "}
+            <span className="font-mono text-text">
+              {thread.harness.threadTs}
+            </span>
+          </div>
+          <a
+            href={thread.harness.permalink}
+            target="_blank"
+            rel="noreferrer"
+            className="text-review hover:underline"
+          >
+            Open #control-e2e fixture thread
+          </a>
+          <div className="italic">“{thread.harness.fixtureText}”</div>
+        </div>
+      ) : null}
       <div className="panel divide-y divide-border">
         {thread.messages.map((m, i) => (
           <div key={i} className="px-4 py-3">
@@ -39,12 +62,15 @@ export default function SlackSourcePage() {
               <span className="text-[13px] font-semibold">{m.author}</span>
               <span className="text-[11px] text-muted font-mono">{m.time}</span>
             </div>
-            <p className="mt-1 text-[13px] leading-5">{m.body}</p>
+            <p className="mt-1 text-[13px] leading-5 whitespace-pre-wrap">
+              {m.body}
+            </p>
           </div>
         ))}
       </div>
       <p className="text-[11px] text-muted">
-        Mocked source of truth for the prototype. Nothing syncs live.
+        Mocked source of truth for the prototype UI. Approve on the Priya draft
+        posts a real reply to the harness thread when SLACK_BOT_TOKEN is set.
       </p>
     </div>
   );
