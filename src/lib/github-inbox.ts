@@ -4,6 +4,7 @@ import {
   GITHUB_NEEDS_YOU_CAP,
   NEEDS_YOU_EXTERNAL_CAP,
 } from "./github-constants";
+import { trimCheckpointSummary } from "./merge-checkpoint";
 export { GITHUB_NEEDS_YOU_CAP, NEEDS_YOU_EXTERNAL_CAP };
 
 export const CONTROL_DIR = path.join(process.cwd(), ".control");
@@ -91,6 +92,8 @@ export interface GithubAttentionEffect {
 export interface GithubWorkstreamPatch {
   id: string;
   changedEntry: string;
+  /** Templated Latest line; required on every non-null workstreamPatch (chip 2). */
+  checkpointLine?: string;
   phase?: "Blocked" | "Human review" | "Running";
   status?: "blocked-on-you" | "running" | "default";
   next?: string;
@@ -457,9 +460,16 @@ export function routeGithubEvent(
     githubDedupeKey: key,
   });
 
-  const baseWs = (changedEntry: string): GithubWorkstreamPatch => ({
+  const repoPr = `${event.repo}#${event.pr_number}`;
+  const summary = trimCheckpointSummary(event.summary);
+
+  const baseWs = (
+    changedEntry: string,
+    checkpointLine: string
+  ): GithubWorkstreamPatch => ({
     id: workstreamId,
     changedEntry,
+    checkpointLine,
     lastActive: "just now",
   });
 
@@ -469,43 +479,52 @@ export function routeGithubEvent(
 
   switch (event.type) {
     case "pr.pushed": {
-      fyiLine = `GitHub · ${event.repo}#${event.pr_number}: ${event.summary}`;
+      fyiLine = `GitHub · ${repoPr}: ${event.summary}`;
       workstreamPatch = {
-        ...baseWs(`PR pushed: ${event.summary}`),
+        ...baseWs(
+          `PR pushed: ${event.summary}`,
+          `New commits on ${repoPr} — ${summary}`
+        ),
         status: "default",
       };
       attention = makeAttention(
         "fyi",
-        `PR pushed · ${event.repo}#${event.pr_number}`,
+        `PR pushed · ${repoPr}`,
         event.summary
       );
       break;
     }
     case "ci.passed": {
-      fyiLine = `CI passed · ${event.repo}#${event.pr_number}: ${event.summary}`;
+      fyiLine = `CI passed · ${repoPr}: ${event.summary}`;
       workstreamPatch = {
-        ...baseWs(`CI passed: ${event.summary}`),
+        ...baseWs(
+          `CI passed: ${event.summary}`,
+          `CI green on ${repoPr} — ${summary}.`
+        ),
         status: "default",
         phase: "Human review",
       };
       attention = makeAttention(
         "fyi",
-        `CI passed · ${event.repo}#${event.pr_number}`,
+        `CI passed · ${repoPr}`,
         event.summary
       );
       break;
     }
     case "ci.failed": {
       workstreamPatch = {
-        ...baseWs(`CI failed: ${event.summary}`),
+        ...baseWs(
+          `CI failed: ${event.summary}`,
+          `CI red on ${repoPr} — ${summary}. Next: unblock CI.`
+        ),
         phase: "Blocked",
         status: "blocked-on-you",
         waitingOn: "you",
-        next: `Unblock CI on ${event.repo}#${event.pr_number}`,
+        next: `Unblock CI on ${repoPr}`,
       };
       attention = makeAttention(
         "now",
-        `CI failed · ${event.repo}#${event.pr_number}`,
+        `CI failed · ${repoPr}`,
         event.summary
       );
       break;
@@ -527,12 +546,13 @@ export function routeGithubEvent(
         }
         attention = makeAttention(
           "now",
-          `Review requested · ${event.repo}#${event.pr_number}`,
+          `Review requested · ${repoPr}`,
           event.summary || `Team @${slug} review requested`
         );
         workstreamPatch = {
           ...baseWs(
-            `Review requested via team @${slug}: ${event.summary}`
+            `Review requested via team @${slug}: ${event.summary}`,
+            `Team @${slug} review requested on ${repoPr} — ${summary}.`
           ),
           status: "blocked-on-you",
           waitingOn: "you",
@@ -548,24 +568,28 @@ export function routeGithubEvent(
       if (actionOnUser) {
         attention = makeAttention(
           "now",
-          `Review requested · ${event.repo}#${event.pr_number}`,
+          `Review requested · ${repoPr}`,
           event.summary
         );
         workstreamPatch = {
-          ...baseWs(`Review requested (needs you): ${event.summary}`),
+          ...baseWs(
+            `Review requested (needs you): ${event.summary}`,
+            `Review requested on ${repoPr} — ${summary}.`
+          ),
           status: "blocked-on-you",
           waitingOn: "you",
           phase: "Human review",
         };
       } else {
-        fyiLine = `Review requested (FYI) · ${event.repo}#${event.pr_number}: ${event.summary}`;
+        fyiLine = `Review requested (FYI) · ${repoPr}: ${event.summary}`;
         attention = makeAttention(
           "fyi",
-          `Review requested · ${event.repo}#${event.pr_number}`,
+          `Review requested · ${repoPr}`,
           event.summary
         );
         workstreamPatch = baseWs(
-          `Review requested (FYI): ${event.summary}`
+          `Review requested (FYI): ${event.summary}`,
+          `Review requested on ${repoPr} — ${summary}.`
         );
       }
       break;
@@ -573,15 +597,18 @@ export function routeGithubEvent(
     case "review.changes_requested": {
       attention = makeAttention(
         "now",
-        `Changes requested · ${event.repo}#${event.pr_number}`,
+        `Changes requested · ${repoPr}`,
         event.summary
       );
       workstreamPatch = {
-        ...baseWs(`Changes requested: ${event.summary}`),
+        ...baseWs(
+          `Changes requested: ${event.summary}`,
+          `Changes requested on ${repoPr} — ${summary}. Next: address review.`
+        ),
         phase: "Human review",
         status: "blocked-on-you",
         waitingOn: "you",
-        next: `Address review on ${event.repo}#${event.pr_number}`,
+        next: `Address review on ${repoPr}`,
       };
       break;
     }

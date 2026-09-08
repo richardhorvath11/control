@@ -124,6 +124,8 @@ CUT: opened/merged/closed, issues, comment floods, labels, assigns, org-wide wat
 
 Hard rules: shared external Needs-you cap **`NEEDS_YOU_EXTERNAL_CAP = 5`** (alias `GITHUB_NEEDS_YOU_CAP`); applies to origin `github`|`slack` only — seed Monday Needs-you are not demoted. When over cap, oldest external Needs-you demote to **FYI attention** (`routing: "fyi"`) and **keep provenance / Open source** (incl. Slack dual links) — they are not collapsed to plain text. Dedupe by event `id`; `review.requested` also by `(review.requested, repo, pr_number, team_or_user)`; otherwise `(type, pr_number, head_sha)`. Team `review.requested` requires `team_slug` in `watch.teams`. No toasts; Review badge unchanged.
 
+**checkpoint merge:** templated `Latest:` line — on apply, workstream `changed` prepends (cap 8) and `mergeCheckpoint` replaces any trailing `\n\nLatest:…` with one templated line (pre-Latest seed prose preserved). No LLM / full rewrite / coalesce.
+
 ### Inbox API
 
 Durable files: `.control/github-inbox/<id>.json` (under gitignored `.control/`).
@@ -267,7 +269,7 @@ Agent reads `watch.slackPrChannelId`, finds messages with PR URLs for `watch.rep
 
 Curls `POST /api/slack/inbox`. No Slack token in repo or Control.
 
-Out of chip: checkpoint rewrite, coalesce, multi-PR follow, Seed/Live toggle, second UI, webhooks-in-Control.
+Out of chip (beyond templated Latest merge): full checkpoint rewrite, coalesce, multi-PR follow, Seed/Live toggle, second UI, webhooks-in-Control.
 
 ## Stack assumptions
 

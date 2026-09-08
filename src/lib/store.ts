@@ -12,6 +12,10 @@ import type {
   Workstream,
 } from "./types";
 import { NEEDS_YOU_EXTERNAL_CAP } from "./github-constants";
+import {
+  mergeCheckpoint,
+  prependChangedEntry,
+} from "./merge-checkpoint";
 
 const initial = seed as SeedData;
 
@@ -78,6 +82,7 @@ interface ControlState {
         workstreamPatch: {
           id: string;
           changedEntry: string;
+          checkpointLine?: string;
           phase?: Workstream["phase"];
           status?: Workstream["status"];
           next?: string;
@@ -100,6 +105,7 @@ interface ControlState {
         workstreamPatch: {
           id: string;
           changedEntry: string;
+          checkpointLine?: string;
           phase?: Workstream["phase"];
           status?: Workstream["status"];
           next?: string;
@@ -278,14 +284,24 @@ export const useControlStore = create<ControlState>()(
               const patch = effects.workstreamPatch;
               workstreams = workstreams.map((w) => {
                 if (w.id !== patch.id) return w;
+                const nextChanged = prependChangedEntry(
+                  w.changed,
+                  patch.changedEntry
+                );
+                const nextCheckpoint = patch.checkpointLine
+                  ? mergeCheckpoint(w.checkpoint, patch.checkpointLine)
+                  : w.checkpoint;
                 return {
                   ...w,
-                  changed: [patch.changedEntry, ...w.changed],
+                  changed: nextChanged,
+                  checkpoint: nextCheckpoint,
                   phase: patch.phase ?? w.phase,
                   status: patch.status ?? w.status,
                   next: patch.next ?? w.next,
                   waitingOn: patch.waitingOn ?? w.waitingOn,
-                  lastActive: patch.lastActive ?? w.lastActive,
+                  lastActive: patch.checkpointLine
+                    ? "just now"
+                    : (patch.lastActive ?? w.lastActive),
                 };
               });
               changed = true;
@@ -421,14 +437,24 @@ export const useControlStore = create<ControlState>()(
               const patch = effects.workstreamPatch;
               workstreams = workstreams.map((w) => {
                 if (w.id !== patch.id) return w;
+                const nextChanged = prependChangedEntry(
+                  w.changed,
+                  patch.changedEntry
+                );
+                const nextCheckpoint = patch.checkpointLine
+                  ? mergeCheckpoint(w.checkpoint, patch.checkpointLine)
+                  : w.checkpoint;
                 return {
                   ...w,
-                  changed: [patch.changedEntry, ...w.changed],
+                  changed: nextChanged,
+                  checkpoint: nextCheckpoint,
                   phase: patch.phase ?? w.phase,
                   status: patch.status ?? w.status,
                   next: patch.next ?? w.next,
                   waitingOn: patch.waitingOn ?? w.waitingOn,
-                  lastActive: patch.lastActive ?? w.lastActive,
+                  lastActive: patch.checkpointLine
+                    ? "just now"
+                    : (patch.lastActive ?? w.lastActive),
                 };
               });
               changed = true;

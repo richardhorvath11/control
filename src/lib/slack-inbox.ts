@@ -68,6 +68,8 @@ export interface SlackNewWorkstream {
 export interface SlackWorkstreamPatch {
   id: string;
   changedEntry: string;
+  /** Templated Latest line; required on every non-null workstreamPatch (chip 2). */
+  checkpointLine?: string;
   phase?: "Human review" | "Blocked" | "Running";
   status?: "blocked-on-you" | "running" | "default";
   next?: string;
@@ -392,15 +394,18 @@ export function routeSlackEvent(
     ];
   }
 
+  const repoPr = `${event.repo}#${event.pr_number}`;
   let workstreamId: string;
   let workstreamPatch: SlackWorkstreamPatch | null = null;
   let newWorkstream: SlackNewWorkstream | null = null;
 
   if (event.pr_number === watch.pr) {
+    const checkpointLine = `Slack ask in ${channelLabel} linked ${repoPr}. Next: review that PR.`;
     workstreamId = watch.workstreamId;
     workstreamPatch = {
       id: workstreamId,
       changedEntry: `Slack review ask in ${channelLabel} · PR #${event.pr_number}`,
+      checkpointLine,
       phase: "Human review",
       status: "blocked-on-you",
       waitingOn: "you",
@@ -408,17 +413,18 @@ export function routeSlackEvent(
       lastActive: "just now",
     };
   } else {
+    const checkpointLine = `Slack ask in ${channelLabel} linked ${repoPr}. Ephemeral review stream.`;
     workstreamId = `ws-review-${event.repo.replace(/[^a-zA-Z0-9]+/g, "-")}-${event.pr_number}`;
     newWorkstream = {
       id: workstreamId,
-      name: `Review · ${event.repo}#${event.pr_number}`,
+      name: `Review · ${repoPr}`,
       phase: "Human review",
-      objective: `Review ask from ${channelLabel} for ${event.repo}#${event.pr_number}`,
+      objective: `Review ask from ${channelLabel} for ${repoPr}`,
       next: `Open PR #${event.pr_number}`,
       changed: [`Slack review ask in ${channelLabel}`],
       waitingOn: "you",
       lastActive: "just now",
-      checkpoint: `Ephemeral review workstream from Slack PR link (${event.permalink}).`,
+      checkpoint: `Review ask from ${channelLabel}.\n\nLatest: ${checkpointLine}`,
       artifacts: [],
       agentIds: [],
       status: "blocked-on-you",
