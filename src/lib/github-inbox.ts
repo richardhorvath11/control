@@ -37,7 +37,12 @@ export interface GitHubInboxEvent {
   occurred_at: string;
   provenance: GitHubEventProvenance;
   workstream_id?: string;
-  /** For review.requested: Needs you if true else FYI (personal / user path) */
+  /**
+   * Personal/user review.requested path only.
+   * Default TRUE when omitted: requested_via=user (or missing) ⇒ Needs-you
+   * unless action_on_user is explicitly false. Team path ignores this field
+   * (watch.teams gate).
+   */
   action_on_user?: boolean;
   /** review.requested: personal vs team/CODEOWNERS */
   requested_via?: "user" | "team";
@@ -536,8 +541,11 @@ export function routeGithubEvent(
         break;
       }
 
-      // Personal / user path (requested_via=user or missing) — same as before
-      if (event.action_on_user) {
+      // Personal / user path (requested_via=user or missing).
+      // Product default: action_on_user omitted ⇒ true ⇒ Needs-you.
+      // Only explicit action_on_user:false routes to FYI. Team path unchanged.
+      const actionOnUser = event.action_on_user !== false;
+      if (actionOnUser) {
         attention = makeAttention(
           "now",
           `Review requested · ${event.repo}#${event.pr_number}`,

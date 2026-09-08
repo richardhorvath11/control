@@ -116,6 +116,12 @@ interface ControlState {
   /** Poll both external inboxes (GitHub + Slack). */
   syncExternalInboxes: () => Promise<void>;
 
+  /**
+   * Clear persisted Zustand (localStorage key control-v0) and rehydrate from seed.
+   * Used by ⌘K "Reset demo state" and after POST /api/demo/reset.
+   */
+  resetDemoState: () => void;
+
   delegate: (delegationId: string) => void;
   delegateAttention: (attentionId: string) => void;
 
@@ -258,7 +264,12 @@ export const useControlStore = create<ControlState>()(
           }
 
           if (!already) {
-            if (effects.fyiLine && !fyi.includes(effects.fyiLine)) {
+            // Prefer attention routing=fyi (keeps provenance). String FYI only when no attention row.
+            if (
+              effects.fyiLine &&
+              !(effects.attention && effects.attention.routing === "fyi") &&
+              !fyi.includes(effects.fyiLine)
+            ) {
               fyi = [effects.fyiLine, ...fyi];
               changed = true;
             }
@@ -282,7 +293,11 @@ export const useControlStore = create<ControlState>()(
 
             appliedIds.add(item.id);
             changed = true;
-          } else if (effects.fyiLine && !fyi.includes(effects.fyiLine)) {
+          } else if (
+            effects.fyiLine &&
+            !(effects.attention && effects.attention.routing === "fyi") &&
+            !fyi.includes(effects.fyiLine)
+          ) {
             fyi = [effects.fyiLine, ...fyi];
             changed = true;
           }
@@ -304,10 +319,10 @@ export const useControlStore = create<ControlState>()(
               .slice(0, externalNow.length - NEEDS_YOU_EXTERNAL_CAP)
               .map((a) => a.id)
           );
+          // Keep demoted items as attention with routing=fyi (provenance + Open source).
+          // Do NOT collapse to plain fyi strings — that strips actionable UI (E2E-1).
           attention = attention.map((a) => {
             if (!demoteIds.has(a.id)) return a;
-            const line = `${a.origin === "slack" ? "Slack" : "GitHub"} (capped) · ${a.title}`;
-            if (!fyi.includes(line)) fyi = [line, ...fyi];
             return {
               ...a,
               routing: "fyi" as const,
@@ -392,7 +407,12 @@ export const useControlStore = create<ControlState>()(
           }
 
           if (!already) {
-            if (effects.fyiLine && !fyi.includes(effects.fyiLine)) {
+            // Prefer attention routing=fyi (keeps provenance). String FYI only when no attention row.
+            if (
+              effects.fyiLine &&
+              !(effects.attention && effects.attention.routing === "fyi") &&
+              !fyi.includes(effects.fyiLine)
+            ) {
               fyi = [effects.fyiLine, ...fyi];
               changed = true;
             }
@@ -416,7 +436,11 @@ export const useControlStore = create<ControlState>()(
 
             appliedIds.add(item.id);
             changed = true;
-          } else if (effects.fyiLine && !fyi.includes(effects.fyiLine)) {
+          } else if (
+            effects.fyiLine &&
+            !(effects.attention && effects.attention.routing === "fyi") &&
+            !fyi.includes(effects.fyiLine)
+          ) {
             fyi = [effects.fyiLine, ...fyi];
             changed = true;
           }
@@ -436,10 +460,9 @@ export const useControlStore = create<ControlState>()(
               .slice(0, externalNow.length - NEEDS_YOU_EXTERNAL_CAP)
               .map((a) => a.id)
           );
+          // Keep demoted items as attention with routing=fyi (provenance + Open source).
           attention = attention.map((a) => {
             if (!demoteIds.has(a.id)) return a;
-            const line = `${a.origin === "slack" ? "Slack" : "GitHub"} (capped) · ${a.title}`;
-            if (!fyi.includes(line)) fyi = [line, ...fyi];
             return {
               ...a,
               routing: "fyi" as const,
@@ -480,6 +503,40 @@ export const useControlStore = create<ControlState>()(
           get().syncGithubInbox(),
           get().syncSlackInbox(),
         ]);
+      },
+
+      resetDemoState: () => {
+        // Clear persisted Zustand key control-v0, then rehydrate in-memory from seed.
+        try {
+          useControlStore.persist.clearStorage();
+        } catch {
+          try {
+            localStorage.removeItem("control-v0");
+          } catch {
+            /* ignore */
+          }
+        }
+        set({
+          clockLabel: initial.clockLabel,
+          mode: initial.mode,
+          focusWorkstreamId: initial.focusWorkstreamId,
+          dayStrip: initial.dayStrip,
+          workstreams: initial.workstreams as Workstream[],
+          attention: initial.attention as AttentionItem[],
+          reviewQueue: initial.reviewQueue as ReviewItem[],
+          agents: initial.agents as Agent[],
+          suggestedDelegations:
+            initial.suggestedDelegations as SeedData["suggestedDelegations"],
+          fyi: [...initial.fyi],
+          sources: initial.sources as SeedData["sources"],
+          usedDelegationIds: [],
+          appliedGithubEventIds: [],
+          appliedSlackEventIds: [],
+          selectedReviewId: initial.reviewQueue[0]?.id ?? null,
+          confirmModal: null,
+          launcherOpen: false,
+        });
+        get().recomputeMode();
       },
 
       recomputeMode: () => {

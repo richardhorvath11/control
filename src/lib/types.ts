@@ -178,6 +178,11 @@ export interface SeedData {
     attentionId?: string;
     workstreamId?: string;
   }[];
+  /**
+   * Seed shape-of-day FYI lines (plain strings).
+   * Actionable external FYI (incl. cap-demoted Needs-you) live as AttentionItem
+   * with routing="fyi" so provenance / Open source survive demotion.
+   */
   fyi: string[];
   sources: {
     slack: Record<string, SlackThreadSource>;

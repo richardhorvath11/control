@@ -10,6 +10,7 @@ export function CommandPalette() {
   const workstreams = useControlStore((s) => s.workstreams);
   const startFocus = useControlStore((s) => s.startFocus);
   const endFocus = useControlStore((s) => s.endFocus);
+  const resetDemoState = useControlStore((s) => s.resetDemoState);
   const mode = useControlStore((s) => s.mode);
   const router = useRouter();
   const [q, setQ] = useState("");
@@ -37,6 +38,14 @@ export function CommandPalette() {
         label: mode === "focus" ? "End focus" : "Start focus",
         run: () => (mode === "focus" ? endFocus() : startFocus()),
       },
+      {
+        id: "reset-demo",
+        label: "Reset demo state",
+        run: () => {
+          resetDemoState();
+          router.push("/now");
+        },
+      },
       ...workstreams.map((w) => ({
         id: w.id,
         label: `Resume · ${w.name}`,
@@ -61,7 +70,7 @@ export function CommandPalette() {
     const query = q.trim().toLowerCase();
     if (!query) return base;
     return base.filter((i) => i.label.toLowerCase().includes(query));
-  }, [q, router, workstreams, mode, startFocus, endFocus]);
+  }, [q, router, workstreams, mode, startFocus, endFocus, resetDemoState]);
 
   if (!open) return null;
 

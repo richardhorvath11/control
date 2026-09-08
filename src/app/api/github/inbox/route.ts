@@ -42,6 +42,9 @@ export async function GET() {
  * POST /api/github/inbox — accept a canonical GitHubInboxEvent.
  * Control holds NO GitHub token. Idempotent on id; dedupes by dedupeKey.
  * review.requested supports requested_via=user|team + team_slug.
+ * Personal path default: when requested_via is "user" (or omitted) and
+ * action_on_user is omitted, treat as Needs-you (action_on_user defaults true).
+ * Explicit action_on_user:false → FYI. Team path: watch.teams gate only.
  * Unknown team → applied=false (ignored). Malformed bodies → 4xx, no write.
  */
 export async function POST(req: NextRequest) {

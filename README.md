@@ -118,11 +118,11 @@ CUT: opened/merged/closed, issues, comment floods, labels, assigns, org-wide wat
 | `pr.pushed` | Workstream changed + FYI only — Needs-you count unchanged |
 | `ci.passed` | Workstream state / FYI |
 | `ci.failed` | Needs you (one item) + workstream blocked; Open source → `provenance.url` |
-| `review.requested` (user) | Needs you if `action_on_user`, else FYI |
-| `review.requested` (team) | Needs you only if `team_slug` in `watch.teams`; else ignored (`applied: false`) |
+| `review.requested` (user) | **Default Needs-you** when `action_on_user` is omitted (`requested_via=user` / personal path ⇒ `action_on_user` defaults **true**). Explicit `action_on_user: false` → FYI |
+| `review.requested` (team) | Needs you only if `team_slug` in `watch.teams`; else ignored (`applied: false`). Team path ignores `action_on_user`. |
 | `review.changes_requested` | Needs you (prefer Now) |
 
-Hard rules: shared external Needs-you cap **`NEEDS_YOU_EXTERNAL_CAP = 5`** (alias `GITHUB_NEEDS_YOU_CAP`); applies to origin `github`|`slack` only — seed Monday Needs-you are not demoted. Dedupe by event `id`; `review.requested` also by `(review.requested, repo, pr_number, team_or_user)`; otherwise `(type, pr_number, head_sha)`. Team `review.requested` requires `team_slug` in `watch.teams`. No toasts; Review badge unchanged.
+Hard rules: shared external Needs-you cap **`NEEDS_YOU_EXTERNAL_CAP = 5`** (alias `GITHUB_NEEDS_YOU_CAP`); applies to origin `github`|`slack` only — seed Monday Needs-you are not demoted. When over cap, oldest external Needs-you demote to **FYI attention** (`routing: "fyi"`) and **keep provenance / Open source** (incl. Slack dual links) — they are not collapsed to plain text. Dedupe by event `id`; `review.requested` also by `(review.requested, repo, pr_number, team_or_user)`; otherwise `(type, pr_number, head_sha)`. Team `review.requested` requires `team_slug` in `watch.teams`. No toasts; Review badge unchanged.
 
 ### Inbox API
 
@@ -152,9 +152,11 @@ Durable files: `.control/github-inbox/<id>.json` (under gitignored `.control/`).
 | Method | Path | Body | Response |
 |--------|------|------|----------|
 | `GET` | `/api/github/inbox` | — | `{ ok, watch, needsYouCap, githubNeedsYou, externalNeedsYou, items }` |
-| `POST` | `/api/github/inbox` | `GitHubInboxEvent` (+ `requested_via?`, `team_slug?`, `requested_user?`) | `{ ok, event, applied, duplicate, item }` |
+| `POST` | `/api/github/inbox` | `GitHubInboxEvent` (+ `requested_via?`, `team_slug?`, `requested_user?`, `action_on_user?`) | `{ ok, event, applied, duplicate, item }` |
 
-Malformed POST → **4xx** and does not write inbox state. Offline seed Needs-you stays at the Monday 2 items until events arrive. Client polls the inbox and merges into the persisted Zustand store. When external (github|slack) Needs-you would exceed 5, oldest demote to FYI; seed Monday items stay.
+`action_on_user` (personal `review.requested` only): **omitted ⇒ true (Needs-you)**; set `false` only when the ask should stay FYI. Team `review.requested` uses `watch.teams`, not this flag.
+
+Malformed POST → **4xx** and does not write inbox state. Offline seed Needs-you stays at the Monday 2 items until events arrive. Client polls the inbox and merges into the persisted Zustand store. When external (github|slack) Needs-you would exceed 5, oldest demote to FYI **attention** (provenance / Open source kept); seed Monday items stay.
 
 
 
@@ -215,6 +217,22 @@ curl -sS -X POST http://localhost:3000/api/github/inbox \
 - **Live**: watcher POSTs events; Attention Items carry https `provenance.url` and Open source opens the real GitHub/checks page in a new tab.
 
 
+### Demo / E2E reset
+
+Persisted Zustand (`localStorage` key **`control-v0`**) can pollute UI E2E after inbox floods. Reset options:
+
+1. **⌘K → “Reset demo state”** — clears `control-v0` and rehydrates from seed (client).
+2. **`POST /api/demo/reset`** — returns client clear instructions; optional `clearInboxes=true` (query or JSON body) deletes `.control/github-inbox/*.json` and `.control/slack-inbox/*.json`. **Does not wipe** `.control/watch.json`.
+3. **QA one-liner**: `localStorage.removeItem('control-v0')` then reload.
+
+```bash
+curl -sS -X POST 'http://localhost:3000/api/demo/reset?clearInboxes=true'
+# or
+curl -sS -X POST http://localhost:3000/api/demo/reset \
+  -H 'Content-Type: application/json' \
+  -d '{"clearInboxes":true}'
+```
+
 ## Stack assumptions
 
 - **Next.js App Router** + TypeScript + Tailwind CSS
@@ -245,11 +263,12 @@ Workstreams: Staging credential rotation (human review), Search ranking experime
 | `GET/POST /api/slack/outbox` | Durable Slack outbox for MCP poster |
 | `GET/POST /api/github/inbox` | Durable GitHub inbox (watcher → Control) |
 | `GET/POST /api/slack/inbox` | Durable Slack PR-link inbox (watcher → Control) |
+| `POST /api/demo/reset` | Clear demo persist instruction; optional `clearInboxes=true` (keeps watch.json) |
 | `POST /api/slack/outbox/:id/ack` | Mark posted after MCP send |
 | `POST /api/slack/outbox/:id/fail` | Mark failed |
 | `POST /api/slack/post` | Soft-disabled (410) |
 
-Command palette opens the launcher (not chat).
+Command palette (⌘K) opens the launcher (not chat). Includes **Reset demo state** (clears `localStorage` key `control-v0` and rehydrates from seed).
 
 ## Click-through
 

@@ -21,6 +21,8 @@ Control holds **no** GitHub or Slack token. A watcher agent polls a watched PR a
 - `pr.pushed`
 - `ci.failed` / `ci.passed`
 - `review.requested` (`requested_via: "user"|"team"`, `team_slug?`)
+  - Personal/user: `action_on_user` omitted ⇒ Needs-you (default true); `false` ⇒ FYI
+  - Team: Needs-you only if `team_slug` ∈ `watch.teams`
 - `review.changes_requested`
 
 ## Slack
@@ -34,6 +36,6 @@ Control holds **no** GitHub or Slack token. A watcher agent polls a watched PR a
 3. `POST /api/github/inbox` or `POST /api/slack/inbox`.
 4. Control persists under `.control/github-inbox/` or `.control/slack-inbox/` and routes into Needs-you.
 5. Idempotent on event `id` (+ type-specific dedupe keys).
-6. External Needs-you capped at **`NEEDS_YOU_EXTERNAL_CAP = 5`**; oldest github|slack demote to FYI. Seed Monday items untouched.
+6. External Needs-you capped at **`NEEDS_YOU_EXTERNAL_CAP = 5`**; oldest github|slack demote to FYI attention (provenance / Open source kept). Seed Monday items untouched.
 
 No second UI — events never render as a feed. Debug: `GET /api/github/inbox`, `GET /api/slack/inbox`.

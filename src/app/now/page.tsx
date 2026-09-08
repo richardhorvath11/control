@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useControlStore } from "@/lib/store";
+import type { AttentionItem, Provenance } from "@/lib/types";
 
 export default function NowPage() {
   const mode = useControlStore((s) => s.mode);
@@ -58,6 +59,58 @@ function FocusToggleButton({ className = "btn-secondary" }: { className?: string
   );
 }
 
+
+function OpenSourceLinks({
+  provenance,
+  workstreamId,
+}: {
+  provenance: Provenance[];
+  workstreamId?: string;
+}) {
+  if (!provenance.length) {
+    return (
+      <Link
+        href={workstreamId ? `/workstreams/${workstreamId}` : "/now"}
+        className="btn-ghost"
+      >
+        Open source
+      </Link>
+    );
+  }
+  return (
+    <>
+      {provenance.map((p, i) => {
+        const label =
+          provenance.length > 1
+            ? `Open source · ${p.kind}`
+            : "Open source";
+        if (p.url && /^https:\/\//i.test(p.url)) {
+          return (
+            <a
+              key={`${p.sourceId}-${i}`}
+              href={p.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-ghost"
+            >
+              {label}
+            </a>
+          );
+        }
+        return (
+          <Link
+            key={`${p.sourceId}-${i}`}
+            href={`/source/${p.kind}/${p.sourceId}`}
+            className="btn-ghost"
+          >
+            {label}
+          </Link>
+        );
+      })}
+    </>
+  );
+}
+
 function MorningNow() {
   const router = useRouter();
   const workstreams = useControlStore((s) => s.workstreams);
@@ -73,6 +126,14 @@ function MorningNow() {
   const delegateAttention = useControlStore((s) => s.delegateAttention);
   const resolveAttention = useControlStore((s) => s.resolveAttention);
   const [fyiOpen, setFyiOpen] = useState(false);
+  /** Cap-demoted + native FYI attention — keep provenance / Open source (E2E-1). */
+  const fyiAttention = useMemo(
+    () =>
+      attention.filter(
+        (a: AttentionItem) => a.routing === "fyi" && !a.resolved
+      ),
+    [attention]
+  );
 
   const resume = workstreams.find((w) => w.id === "ws-cred") ?? workstreams[0];
 
@@ -221,10 +282,44 @@ function MorningNow() {
           <span className="text-muted">· shape of the day, no action</span>
         </button>
         {fyiOpen && (
-          <ul className="border-t border-border px-4 py-3 space-y-1.5 text-[12px] text-muted">
+          <ul className="border-t border-border px-4 py-3 space-y-2 text-[12px] text-muted">
+            {fyiAttention.map((item) => (
+              <li
+                key={item.id}
+                className="flex flex-wrap items-start gap-2 text-text/90"
+              >
+                <span className="mt-0.5 shrink-0">·</span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px] leading-5">
+                    <span className="font-medium text-text">{item.title}</span>
+                    {item.origin === "github" || item.origin === "slack" ? (
+                      <span className="text-muted">
+                        {" "}
+                        · {item.origin}
+                        {item.why?.includes("demoted") ? " · capped" : ""}
+                      </span>
+                    ) : null}
+                  </div>
+                  {item.why ? (
+                    <div className="text-[11px] text-muted mt-0.5 line-clamp-2">
+                      {item.why}
+                    </div>
+                  ) : null}
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    <OpenSourceLinks
+                      provenance={item.provenance}
+                      workstreamId={item.workstreamId}
+                    />
+                  </div>
+                </div>
+              </li>
+            ))}
             {fyi.map((line) => (
               <li key={line}>· {line}</li>
             ))}
+            {fyiAttention.length === 0 && fyi.length === 0 && (
+              <li className="text-muted">Nothing in FYI.</li>
+            )}
           </ul>
         )}
       </section>
