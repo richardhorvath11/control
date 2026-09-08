@@ -1,4 +1,4 @@
-# Control — V0.5+ (indirect review)
+# Control — V0.6 (standing watchers)
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
 
@@ -187,7 +187,7 @@ curl -sS -X POST http://localhost:3000/api/github/inbox \
   -d "{\"id\":\"rev-req-team-platform-32\",\"type\":\"review.requested\",\"repo\":\"richardhorvath11/battle-buddy\",\"pr_number\":32,\"summary\":\"CODEOWNERS @platform requested review\",\"occurred_at\":\"2026-09-07T22:00:00.000Z\",\"provenance\":{\"url\":\"https://github.com/richardhorvath11/battle-buddy/pull/32\",\"title\":\"Review requested\",\"kind\":\"review\"},\"requested_via\":\"team\",\"team_slug\":\"platform\",\"workstream_id\":\"ws-cred\"}"
 ```
 
-See `scripts/github-watcher.md` for the agent sync sketch.
+See `scripts/github-watcher.md` (V0.6 standing tick) and `scripts/slack-pr-watcher.md`.
 
 ### Smoke `ci.failed`
 
@@ -232,6 +232,42 @@ curl -sS -X POST http://localhost:3000/api/demo/reset \
   -H 'Content-Type: application/json' \
   -d '{"clearInboxes":true}'
 ```
+
+
+## Standing watchers (V0.6)
+
+Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slack tokens; the host agent runs `gh` / Slack MCP and POSTs into the existing inbox APIs.
+
+| Piece | Path |
+|-------|------|
+| GitHub tick | `scripts/github-watcher-tick.sh` |
+| GitHub docs | `scripts/github-watcher.md` |
+| Slack helper | `scripts/slack-pr-inbox-post.sh` |
+| Slack docs | `scripts/slack-pr-watcher.md` |
+| Watch template | `watch.example.json` → `.control/watch.json` |
+| GitHub state | `.control/github-watcher-state.json` (gitignored) |
+
+### One GitHub tick
+
+```bash
+./scripts/github-watcher-tick.sh
+# dry-run (Control optional):
+./scripts/github-watcher-tick.sh --dry-run
+```
+
+Each tick: read watch → `gh` PR head SHA / CI / reviewers / changes-requested → diff state → `POST` only **new** events to `/api/github/inbox`. Quiet noop updates `last_tick` only. First tick baselines state without POSTs. `teams: []` ⇒ never emit team `review.requested`. Cap remains `NEEDS_YOU_EXTERNAL_CAP = 5` inside Control.
+
+### Slack MCP → helper
+
+Agent reads `watch.slackPrChannelId`, finds messages with PR URLs for `watch.repo`, then:
+
+```bash
+./scripts/slack-pr-inbox-post.sh <channel_id> <message_ts> <permalink> <text> <repo> <pr_number>
+```
+
+Curls `POST /api/slack/inbox`. No Slack token in repo or Control.
+
+Out of chip: checkpoint rewrite, coalesce, multi-PR follow, Seed/Live toggle, second UI, webhooks-in-Control.
 
 ## Stack assumptions
 
