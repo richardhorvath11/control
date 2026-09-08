@@ -74,7 +74,7 @@ No secrets in git. Credentials (if any) live only with the Slack MCP host, not i
 
 ## Indirect review inboxes (V0.5+)
 
-Two inbound paths into **Needs-you** (not Review): (1) GitHub team/CODEOWNERS `review.requested` via `watch.teams`; (2) Slack one-channel PR-link watch → `/api/slack/inbox`. Shared cap `NEEDS_YOU_EXTERNAL_CAP = 5`.
+Two inbound paths into **Needs-you** (not Review): (1) GitHub team/CODEOWNERS `review.requested` via `watch.teams`; (2) Slack one-channel PR-link watch → `/api/slack/inbox`. Shared cap `NEEDS_YOU_EXTERNAL_CAP = 5`. Same-repo PR Slack ask + GitHub `review.requested` **coalesce** into one Attention Item with dual provenance.
 
 ### GitHub ingestion
 
@@ -122,9 +122,11 @@ CUT: opened/merged/closed, issues, comment floods, labels, assigns, org-wide wat
 | `review.requested` (team) | Needs you only if `team_slug` in `watch.teams`; else ignored (`applied: false`). Team path ignores `action_on_user`. |
 | `review.changes_requested` | Needs you (prefer Now) |
 
-Hard rules: shared external Needs-you cap **`NEEDS_YOU_EXTERNAL_CAP = 5`** (alias `GITHUB_NEEDS_YOU_CAP`); applies to origin `github`|`slack` only — seed Monday Needs-you are not demoted. When over cap, oldest external Needs-you demote to **FYI attention** (`routing: "fyi"`) and **keep provenance / Open source** (incl. Slack dual links) — they are not collapsed to plain text. Dedupe by event `id`; `review.requested` also by `(review.requested, repo, pr_number, team_or_user)`; otherwise `(type, pr_number, head_sha)`. Team `review.requested` requires `team_slug` in `watch.teams`. No toasts; Review badge unchanged.
+Hard rules: shared external Needs-you cap **`NEEDS_YOU_EXTERNAL_CAP = 5`** (alias `GITHUB_NEEDS_YOU_CAP`); applies to origin `github`|`slack`|`external` — seed Monday Needs-you are not demoted. When over cap, oldest external Needs-you demote to **FYI attention** (`routing: "fyi"`) and **keep provenance / Open source** (incl. Slack dual links) — they are not collapsed to plain text. Dedupe by event `id`; `review.requested` also by `(review.requested, repo, pr_number, team_or_user)`; otherwise `(type, pr_number, head_sha)`. Team `review.requested` requires `team_slug` in `watch.teams`. No toasts; Review badge unchanged.
 
-**checkpoint merge:** templated `Latest:` line — on apply, workstream `changed` prepends (cap 8) and `mergeCheckpoint` replaces any trailing `\n\nLatest:…` with one templated line (pre-Latest seed prose preserved). No LLM / full rewrite / coalesce.
+**coalesce dual asks:** Slack `pr_link` + GitHub `review.requested` (user or allowed team) for the same `normalize(repo)#pr` merge into **one** Needs-you (`ext-att-review-{owner}-{repo}-{pr}`, origin `external`, dual provenance). Cap counts it once. Inbox event rows stay separate. CI / `changes_requested` / FYI / seed do **not** coalesce. No fuzzy NLP.
+
+**checkpoint merge:** templated `Latest:` line — on apply, workstream `changed` prepends (cap 8) and `mergeCheckpoint` replaces any trailing `\n\nLatest:…` with one templated line (pre-Latest seed prose preserved). Coalesce must not skip workstreamPatch. No LLM / full rewrite.
 
 ### Inbox API
 
@@ -269,7 +271,7 @@ Agent reads `watch.slackPrChannelId`, finds messages with PR URLs for `watch.rep
 
 Curls `POST /api/slack/inbox`. No Slack token in repo or Control.
 
-Out of chip (beyond templated Latest merge): full checkpoint rewrite, coalesce, multi-PR follow, Seed/Live toggle, second UI, webhooks-in-Control.
+Out of chip (beyond templated Latest + dual-ask coalesce): full checkpoint rewrite, CI↔review coalesce, multi-PR follow, Seed/Live toggle, second UI, webhooks-in-Control, fuzzy NLP.
 
 ## Stack assumptions
 

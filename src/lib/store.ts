@@ -16,6 +16,10 @@ import {
   mergeCheckpoint,
   prependChangedEntry,
 } from "./merge-checkpoint";
+import {
+  isReviewAskNeedsYou,
+  upsertReviewAskAttention,
+} from "./coalesce-review-ask";
 
 const initial = seed as SeedData;
 
@@ -242,30 +246,50 @@ export const useControlStore = create<ControlState>()(
 
           if (effects.attention) {
             const att = { ...effects.attention } as AttentionItem;
-            const existingIdx = attention.findIndex((a) => a.id === att.id);
-            if (existingIdx >= 0) {
-              // Reconcile routing (server may have demoted older Needs-you).
-              const prev = attention[existingIdx];
-              if (prev.routing !== att.routing || prev.why !== att.why) {
-                attention = attention.map((a, i) =>
-                  i === existingIdx
-                    ? {
-                        ...a,
-                        routing: att.routing,
-                        why: att.why,
-                        provenance: att.provenance,
-                      }
-                    : a
-                );
+            if (isReviewAskNeedsYou(att) || att.coalesceKey || att.origin === "external") {
+              // Coalesce class: merge-by-stable-id (migrate legacy gh-att-* too)
+              const before = attention;
+              const result = upsertReviewAskAttention(attention, att);
+              attention = result.attention as AttentionItem[];
+              if (attention !== before) changed = true;
+              // Reconcile demotion routing from server on the merged row
+              if (result.index >= 0 && att.routing === "fyi") {
+                const cur = attention[result.index];
+                if (cur && cur.routing !== "fyi") {
+                  attention = attention.map((a, i) =>
+                    i === result.index
+                      ? { ...a, routing: "fyi", why: att.why }
+                      : a
+                  );
+                  changed = true;
+                }
+              }
+            } else {
+              const existingIdx = attention.findIndex((a) => a.id === att.id);
+              if (existingIdx >= 0) {
+                // Reconcile routing (server may have demoted older Needs-you).
+                const prev = attention[existingIdx];
+                if (prev.routing !== att.routing || prev.why !== att.why) {
+                  attention = attention.map((a, i) =>
+                    i === existingIdx
+                      ? {
+                          ...a,
+                          routing: att.routing,
+                          why: att.why,
+                          provenance: att.provenance,
+                        }
+                      : a
+                  );
+                  changed = true;
+                }
+              } else if (!already) {
+                if (att.routing === "now") {
+                  attention = [att, ...attention];
+                } else {
+                  attention = [...attention, att];
+                }
                 changed = true;
               }
-            } else if (!already) {
-              if (att.routing === "now") {
-                attention = [att, ...attention];
-              } else {
-                attention = [...attention, att];
-              }
-              changed = true;
             }
           }
 
@@ -280,6 +304,7 @@ export const useControlStore = create<ControlState>()(
               changed = true;
             }
 
+            // Checkpoint Latest still runs on every applied event (incl. coalesce second signal).
             if (effects.workstreamPatch) {
               const patch = effects.workstreamPatch;
               workstreams = workstreams.map((w) => {
@@ -319,12 +344,14 @@ export const useControlStore = create<ControlState>()(
           }
         }
 
-        // Client-side safety: demote oldest external (github|slack) Needs-you over shared cap.
+        // Client-side safety: demote oldest external (github|slack|external) Needs-you over shared cap.
         // Seed Monday Needs-you are not external and are never demoted here.
         const externalNow = attention
           .filter(
             (a) =>
-              (a.origin === "github" || a.origin === "slack") &&
+              (a.origin === "github" ||
+                a.origin === "slack" ||
+                a.origin === "external") &&
               a.routing === "now" &&
               !a.resolved
           )
@@ -396,29 +423,47 @@ export const useControlStore = create<ControlState>()(
 
           if (effects.attention) {
             const att = { ...effects.attention } as AttentionItem;
-            const existingIdx = attention.findIndex((a) => a.id === att.id);
-            if (existingIdx >= 0) {
-              const prev = attention[existingIdx];
-              if (prev.routing !== att.routing || prev.why !== att.why) {
-                attention = attention.map((a, i) =>
-                  i === existingIdx
-                    ? {
-                        ...a,
-                        routing: att.routing,
-                        why: att.why,
-                        provenance: att.provenance,
-                      }
-                    : a
-                );
+            if (isReviewAskNeedsYou(att) || att.coalesceKey || att.origin === "external") {
+              const before = attention;
+              const result = upsertReviewAskAttention(attention, att);
+              attention = result.attention as AttentionItem[];
+              if (attention !== before) changed = true;
+              if (result.index >= 0 && att.routing === "fyi") {
+                const cur = attention[result.index];
+                if (cur && cur.routing !== "fyi") {
+                  attention = attention.map((a, i) =>
+                    i === result.index
+                      ? { ...a, routing: "fyi", why: att.why }
+                      : a
+                  );
+                  changed = true;
+                }
+              }
+            } else {
+              const existingIdx = attention.findIndex((a) => a.id === att.id);
+              if (existingIdx >= 0) {
+                const prev = attention[existingIdx];
+                if (prev.routing !== att.routing || prev.why !== att.why) {
+                  attention = attention.map((a, i) =>
+                    i === existingIdx
+                      ? {
+                          ...a,
+                          routing: att.routing,
+                          why: att.why,
+                          provenance: att.provenance,
+                        }
+                      : a
+                  );
+                  changed = true;
+                }
+              } else if (!already) {
+                if (att.routing === "now") {
+                  attention = [att, ...attention];
+                } else {
+                  attention = [...attention, att];
+                }
                 changed = true;
               }
-            } else if (!already) {
-              if (att.routing === "now") {
-                attention = [att, ...attention];
-              } else {
-                attention = [...attention, att];
-              }
-              changed = true;
             }
           }
 
@@ -433,6 +478,7 @@ export const useControlStore = create<ControlState>()(
               changed = true;
             }
 
+            // Checkpoint Latest still runs on every applied event (incl. coalesce second signal).
             if (effects.workstreamPatch) {
               const patch = effects.workstreamPatch;
               workstreams = workstreams.map((w) => {
@@ -475,7 +521,9 @@ export const useControlStore = create<ControlState>()(
         const externalNow = attention
           .filter(
             (a) =>
-              (a.origin === "github" || a.origin === "slack") &&
+              (a.origin === "github" ||
+                a.origin === "slack" ||
+                a.origin === "external") &&
               a.routing === "now" &&
               !a.resolved
           )

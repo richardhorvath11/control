@@ -292,7 +292,7 @@ function MorningNow() {
                 <div className="min-w-0 flex-1">
                   <div className="text-[12px] leading-5">
                     <span className="font-medium text-text">{item.title}</span>
-                    {item.origin === "github" || item.origin === "slack" ? (
+                    {item.origin === "github" || item.origin === "slack" || item.origin === "external" ? (
                       <span className="text-muted">
                         {" "}
                         · {item.origin}

@@ -7,6 +7,11 @@ import {
   type WatchConfig,
 } from "./github-inbox";
 import { NEEDS_YOU_EXTERNAL_CAP } from "./github-constants";
+import {
+  reviewAskAttentionId,
+  reviewAskCoalesceKey,
+  reviewAskTitle,
+} from "./coalesce-review-ask";
 
 export const SLACK_INBOX_DIR = path.join(CONTROL_DIR, "slack-inbox");
 
@@ -43,9 +48,12 @@ export interface SlackAttentionEffect {
   suggestedAction: "open" | "delegate" | "open_review" | "resume";
   provenance: SlackProvenanceEntry[];
   createdAt: string;
-  origin: "slack";
+  /** pr_link Needs-you use "external" (coalesce class) */
+  origin: "slack" | "external";
   slackEventId: string;
   slackDedupeKey: string;
+  /** normalize(repo)#pr for coalesce with GitHub review.requested */
+  coalesceKey?: string;
 }
 
 export interface SlackNewWorkstream {
@@ -356,9 +364,10 @@ export function routeSlackEvent(
 
   const channelLabel =
     watch.slackPrChannelName?.trim() || "#control-e2e";
-  const why = `Review ask in ${channelLabel} · PR #${event.pr_number}`;
+  const why = `Review ask in ${channelLabel}`;
   const key = slackDedupeKey(event);
-  const attentionId = `slack-att-${event.id}`;
+  const coalesceKey = reviewAskCoalesceKey(event.repo, event.pr_number);
+  const attentionId = reviewAskAttentionId(event.repo, event.pr_number);
 
   // Ensure dual provenance
   const ghUrl = `https://github.com/${event.repo}/pull/${event.pr_number}`;
@@ -436,15 +445,16 @@ export function routeSlackEvent(
   const attention: SlackAttentionEffect = {
     id: attentionId,
     routing: "now",
-    title: `Review ask · ${event.repo}#${event.pr_number}`,
+    title: reviewAskTitle(event.repo, event.pr_number),
     why,
     workstreamId,
     suggestedAction: "open",
     provenance,
     createdAt: event.occurred_at,
-    origin: "slack",
+    origin: "external",
     slackEventId: event.id,
     slackDedupeKey: key,
+    coalesceKey,
   };
 
   return {

@@ -67,8 +67,10 @@ export interface AttentionItem {
   provenance: Provenance[];
   createdAt: string;
   resolved?: boolean;
-  /** Seed vs live external inbox — external (github|slack) Needs-you capped at NEEDS_YOU_EXTERNAL_CAP; seed Monday items are not demoted */
-  origin?: "seed" | "github" | "slack";
+  /** Seed vs live external inbox — external (github|slack|external) Needs-you capped at NEEDS_YOU_EXTERNAL_CAP; seed Monday items are not demoted. Coalesced review-asks use origin "external". */
+  origin?: "seed" | "github" | "slack" | "external";
+  /** Present on coalesced Slack↔GitHub review-ask Needs-you (normalize(repo)#pr) */
+  coalesceKey?: string;
   githubEventId?: string;
   githubDedupeKey?: string;
   slackEventId?: string;

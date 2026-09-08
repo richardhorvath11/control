@@ -5,6 +5,11 @@ import {
   NEEDS_YOU_EXTERNAL_CAP,
 } from "./github-constants";
 import { trimCheckpointSummary } from "./merge-checkpoint";
+import {
+  reviewAskAttentionId,
+  reviewAskCoalesceKey,
+  reviewAskTitle,
+} from "./coalesce-review-ask";
 export { GITHUB_NEEDS_YOU_CAP, NEEDS_YOU_EXTERNAL_CAP };
 
 export const CONTROL_DIR = path.join(process.cwd(), ".control");
@@ -84,9 +89,12 @@ export interface GithubAttentionEffect {
     timestamp?: string;
   }[];
   createdAt: string;
-  origin: "github";
+  /** review.requested Needs-you use "external" (coalesce class); others stay "github" */
+  origin: "github" | "external";
   githubEventId: string;
   githubDedupeKey: string;
+  /** Present when coalesce-class (review.requested → now) */
+  coalesceKey?: string;
 }
 
 export interface GithubWorkstreamPatch {
@@ -427,38 +435,50 @@ export function routeGithubEvent(
 ): GithubRoutingEffects {
   const workstreamId = event.workstream_id || watch.workstreamId;
   const key = dedupeKey(event);
-  const attentionId = `gh-att-${event.id}`;
   const createdAt = event.occurred_at;
+  const coalesceKey = reviewAskCoalesceKey(event.repo, event.pr_number);
+  const stableReviewAskId = reviewAskAttentionId(event.repo, event.pr_number);
 
-  const provenance = [
-    {
-      kind: "github" as const,
-      title: event.provenance.title,
-      locator: `${event.repo}#${event.pr_number}`,
-      excerpt: event.summary,
-      sourceId: `live-${event.pr_number}`,
-      url: event.provenance.url,
-      timestamp: event.occurred_at,
-    },
-  ];
+  const baseProvenance = {
+    kind: "github" as const,
+    title: event.provenance.title,
+    locator: `${event.repo}#${event.pr_number}`,
+    excerpt: event.summary,
+    sourceId: `live-${event.pr_number}`,
+    url: event.provenance.url,
+    timestamp: event.occurred_at,
+  };
 
   const makeAttention = (
     routing: "now" | "fyi",
     title: string,
-    why: string
-  ): GithubAttentionEffect => ({
-    id: attentionId,
-    routing,
-    title,
-    why,
-    workstreamId,
-    suggestedAction: "open",
-    provenance,
-    createdAt,
-    origin: "github",
-    githubEventId: event.id,
-    githubDedupeKey: key,
-  });
+    why: string,
+    opts?: { coalesce?: boolean }
+  ): GithubAttentionEffect => {
+    const coalesce = !!opts?.coalesce;
+    const provenance = [
+      coalesce
+        ? {
+            ...baseProvenance,
+            title: `${event.repo}#${event.pr_number}`,
+          }
+        : baseProvenance,
+    ];
+    return {
+      id: coalesce ? stableReviewAskId : `gh-att-${event.id}`,
+      routing,
+      title,
+      why,
+      workstreamId,
+      suggestedAction: "open",
+      provenance,
+      createdAt,
+      origin: coalesce ? "external" : "github",
+      githubEventId: event.id,
+      githubDedupeKey: key,
+      ...(coalesce ? { coalesceKey } : {}),
+    };
+  };
 
   const repoPr = `${event.repo}#${event.pr_number}`;
   const summary = trimCheckpointSummary(event.summary);
@@ -546,8 +566,9 @@ export function routeGithubEvent(
         }
         attention = makeAttention(
           "now",
-          `Review requested · ${repoPr}`,
-          event.summary || `Team @${slug} review requested`
+          reviewAskTitle(event.repo, event.pr_number),
+          event.summary || `Team @${slug} review requested`,
+          { coalesce: true }
         );
         workstreamPatch = {
           ...baseWs(
@@ -568,8 +589,9 @@ export function routeGithubEvent(
       if (actionOnUser) {
         attention = makeAttention(
           "now",
-          `Review requested · ${repoPr}`,
-          event.summary
+          reviewAskTitle(event.repo, event.pr_number),
+          event.summary,
+          { coalesce: true }
         );
         workstreamPatch = {
           ...baseWs(
