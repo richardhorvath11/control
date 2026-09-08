@@ -102,7 +102,7 @@ Default fields:
 }
 ```
 
-- `teams`: team/CODEOWNERS slugs for `review.requested` with `requested_via: "team"` (placeholder `[]`).
+- `teams`: **intentional default `[]`**. Team/CODEOWNERS `review.requested` (`requested_via: "team"`) is a **no-op** until operators set **1–3** team slugs (e.g. in `.control/watch.json`). Do **not** seed `platform` (or any slug) in the default. **E2E/QA must configure `watch.teams` before B-1** (team-review scenarios); injects with unknown `team_slug` return `applied: false` and create no Needs-you.
 - `slackPrChannelId` / `slackPrChannelName`: single Slack channel for PR-link Needs-you.
 
 ### Events in scope

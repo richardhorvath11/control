@@ -14,7 +14,7 @@ Control holds **no** GitHub or Slack token. A watcher agent polls a watched PR a
 | `workstreamId` | `ws-cred` |
 | `slackPrChannelId` | `C0BVCSA4T2P` |
 | `slackPrChannelName` | `#control-e2e` |
-| `teams` | `[]` (placeholder — add team slugs to accept team `review.requested`) |
+| `teams` | **Default `[]` (intentional).** CODEOWNERS/team `review.requested` is a no-op until operators set 1–3 slugs. Do not seed `platform`. **E2E/QA: configure `watch.teams` before B-1.** |
 
 ## Event types (GitHub)
 
