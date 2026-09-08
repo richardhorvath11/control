@@ -12,6 +12,7 @@ import {
   reviewAskCoalesceKey,
   reviewAskTitle,
 } from "./coalesce-review-ask";
+import { upsertFollowFromSlackApply } from "./pr-follows";
 
 export const SLACK_INBOX_DIR = path.join(CONTROL_DIR, "slack-inbox");
 
@@ -568,6 +569,26 @@ export async function acceptSlackInboxEvent(
     effects,
   };
   await writeSlackInboxItem(item);
+
+  // Chip 4: upsert PR follow for non-primary Slack-discovered PRs (server-side).
+  // Primary watch.pr is never stored as a follow; wrong repo already ignored above.
+  const followWsId =
+    effects.newWorkstream?.id ??
+    effects.attention?.workstreamId ??
+    effects.workstreamPatch?.id;
+  if (
+    followWsId &&
+    event.pr_number !== watch.pr &&
+    event.repo.toLowerCase() === watch.repo.toLowerCase()
+  ) {
+    await upsertFollowFromSlackApply({
+      repo: event.repo,
+      pr: event.pr_number,
+      slack_event_id: event.id,
+      workstreamId: followWsId,
+      watch,
+    });
+  }
 
   const { enforceExternalNeedsYouCap } = await import("./needs-you-cap");
   await enforceExternalNeedsYouCap(NEEDS_YOU_EXTERNAL_CAP);

@@ -54,6 +54,19 @@ If Control is down, the helper prints a warning, echoes the payload, and exits `
 
 Matches `src/lib/slack-inbox.ts` (`SlackInboxEvent`). Provenance may be omitted — Control fills dual slack+github provenance. Channel must equal `watch.slackPrChannelId` or Control stores `applied: false` (ignored).
 
+## Chip 4 — follows from Slack apply
+
+When Slack inbox **applies** a `pr_link` for `watch.repo` with `pr_number ≠ watch.pr`:
+
+1. Control creates/updates the **ephemeral** workstream (`ws-review-{repo}-{N}`) as before.
+2. **Server-side**, Control also **upserts** a follow into `.control/pr-follows.json` (see `src/lib/pr-follows.ts` + `scripts/github-watcher.md`):
+   - **TTL 48h** from now (new or refresh).
+   - **Cap 5** active follows (oldest `expires_at` dropped when adding a 6th).
+   - **Primary `watch.pr` is never** stored as a follow.
+3. The GitHub watcher tick then polls **primary + active follows** (same repo only) and POSTs CI/review signals into `/api/github/inbox` with the follow’s ephemeral `workstreamId`.
+
+No NLP without a URL. No org-wide. Wrong-repo URLs stay ignored (`applied: false`).
+
 ## Cuts
 
-Multi-channel watch, NLP without URL, Slack app / bot token inside Next, posting outside the configured channel.
+Multi-channel watch, NLP without URL, Slack app / bot token inside Next, posting outside the configured channel, Seed/Live (chip 5).

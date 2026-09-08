@@ -250,6 +250,8 @@ Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slac
 | Slack docs | `scripts/slack-pr-watcher.md` |
 | Watch template | `watch.example.json` → `.control/watch.json` |
 | GitHub state | `.control/github-watcher-state.json` (gitignored) |
+| PR follows (chip 4) | `.control/pr-follows.json` (gitignored; Slack apply upserts) |
+| Follow smoke | `npx tsx scripts/smoke-pr-follows.ts` |
 
 ### One GitHub tick
 
@@ -259,7 +261,11 @@ Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slac
 ./scripts/github-watcher-tick.sh --dry-run
 ```
 
-Each tick: read watch → `gh` PR head SHA / CI / reviewers / changes-requested → diff state → `POST` only **new** events to `/api/github/inbox`. Quiet noop updates `last_tick` only. First tick baselines state without POSTs. `teams: []` ⇒ never emit team `review.requested`. Cap remains `NEEDS_YOU_EXTERNAL_CAP = 5` inside Control.
+Each tick: read watch + **active follows** → `gh` each PR (primary + follows, same repo) → per-PR diff → `POST` only **new** events to `/api/github/inbox`. Quiet noop updates `last_tick` only when nothing changed across all PRs. Baseline-on-first-see per PR. `teams: []` ⇒ never emit team `review.requested`. Cap remains `NEEDS_YOU_EXTERNAL_CAP = 5` inside Control.
+
+### Slack-discovered follows (chip 4)
+
+When Slack inbox applies a `pr_link` for `watch.repo` with `pr_number ≠ watch.pr`, Control upserts a **follow** (48h TTL, max 5, refresh on re-link). Primary `watch.pr` is never a follow. The GitHub tick polls primary + active follows; expired rows drop off. No org-wide, no NLP without URL. See `scripts/github-watcher.md`.
 
 ### Slack MCP → helper
 
@@ -271,7 +277,7 @@ Agent reads `watch.slackPrChannelId`, finds messages with PR URLs for `watch.rep
 
 Curls `POST /api/slack/inbox`. No Slack token in repo or Control.
 
-Out of chip (beyond templated Latest + dual-ask coalesce): full checkpoint rewrite, CI↔review coalesce, multi-PR follow, Seed/Live toggle, second UI, webhooks-in-Control, fuzzy NLP.
+Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, Seed/Live (chip 5), infinite follows, raising external Needs-you cap, full checkpoint rewrite, CI↔review coalesce.
 
 ## Stack assumptions
 
