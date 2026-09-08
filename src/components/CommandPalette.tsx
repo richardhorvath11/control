@@ -11,6 +11,8 @@ export function CommandPalette() {
   const startFocus = useControlStore((s) => s.startFocus);
   const endFocus = useControlStore((s) => s.endFocus);
   const resetDemoState = useControlStore((s) => s.resetDemoState);
+  const seedLiveMode = useControlStore((s) => s.seedLiveMode);
+  const setSeedLiveMode = useControlStore((s) => s.setSeedLiveMode);
   const mode = useControlStore((s) => s.mode);
   const router = useRouter();
   const [q, setQ] = useState("");
@@ -37,6 +39,15 @@ export function CommandPalette() {
         id: "focus",
         label: mode === "focus" ? "End focus" : "Start focus",
         run: () => (mode === "focus" ? endFocus() : startFocus()),
+      },
+      {
+        id: "switch-mode",
+        label:
+          seedLiveMode === "live" ? "Switch to Demo" : "Switch to Live",
+        run: () => {
+          setSeedLiveMode(seedLiveMode === "live" ? "demo" : "live");
+          router.push("/now");
+        },
       },
       {
         id: "reset-demo",
@@ -70,7 +81,7 @@ export function CommandPalette() {
     const query = q.trim().toLowerCase();
     if (!query) return base;
     return base.filter((i) => i.label.toLowerCase().includes(query));
-  }, [q, router, workstreams, mode, startFocus, endFocus, resetDemoState]);
+  }, [q, router, workstreams, mode, startFocus, endFocus, resetDemoState, seedLiveMode, setSeedLiveMode]);
 
   if (!open) return null;
 

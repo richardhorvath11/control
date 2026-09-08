@@ -27,11 +27,13 @@ async function clearInboxDir(dir: string): Promise<number> {
 
 /**
  * POST /api/demo/reset
- * Clears demo/E2E pollution from durable inboxes (optional) and instructs the
- * client to clear persisted Zustand (localStorage key `control-v0`).
+ * Instructs the client to clear persisted Zustand (`control-v0`) and return to
+ * Monday seed. Clears applied-id tracking on the client (soft-ignore) so Demo
+ * does not re-merge inbox files. Does NOT delete inbox files by default and
+ * never touches watch.json / pr-follows / watchers.
  *
- * Body/query: clearInboxes=true → wipe `.control/github-inbox` + `.control/slack-inbox`.
- * Does NOT wipe `.control/watch.json`.
+ * Body/query: clearInboxes=true → optional wipe of `.control/github-inbox` +
+ * `.control/slack-inbox` JSON only. Prefer leaving inboxes on disk for Live.
  */
 export async function POST(req: NextRequest) {
   let clearInboxes = false;
@@ -69,11 +71,13 @@ export async function POST(req: NextRequest) {
     githubCleared,
     slackCleared,
     watchPreserved: true,
+    followsPreserved: true,
     /** Client must clear localStorage key control-v0 and rehydrate from seed */
     client: {
       localStorageKey: "control-v0",
+      modeKey: "control-v0-mode",
       instruction:
-        "Call useControlStore.getState().resetDemoState() or localStorage.removeItem('control-v0') then reload. ⌘K → Reset demo state.",
+        "Call useControlStore.getState().resetDemoState() (sets mode=demo, clears applied ids, keeps inbox files) or localStorage.removeItem('control-v0') then reload. ⌘K → Reset demo state. Watchers keep POSTing regardless of mode.",
     },
   });
 }

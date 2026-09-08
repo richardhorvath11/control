@@ -211,3 +211,6 @@ export interface SeedData {
     calendar: Record<string, CalendarEvent>;
   };
 }
+
+/** Seed (Monday demo) vs Live (apply durable inboxes). Not auth. Persisted in localStorage `control-v0-mode`. */
+export type SeedLiveMode = "demo" | "live";

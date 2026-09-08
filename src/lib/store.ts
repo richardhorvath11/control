@@ -9,9 +9,15 @@ import type {
   Mode,
   ReviewItem,
   SeedData,
+  SeedLiveMode,
   Workstream,
 } from "./types";
 import { NEEDS_YOU_EXTERNAL_CAP } from "./github-constants";
+import {
+  DEFAULT_SEED_LIVE_MODE,
+  readSeedLiveMode,
+  writeSeedLiveMode,
+} from "./seed-live-mode";
 import {
   mergeCheckpoint,
   prependChangedEntry,
@@ -30,6 +36,8 @@ function uid(prefix: string) {
 interface ControlState {
   clockLabel: string;
   mode: Mode;
+  /** Demo (Monday seed) vs Live (apply durable inboxes). localStorage `control-v0-mode`. */
+  seedLiveMode: SeedLiveMode;
   focusWorkstreamId: string | null;
   dayStrip: SeedData["dayStrip"];
   workstreams: Workstream[];
@@ -64,6 +72,14 @@ interface ControlState {
 
   setHasHydrated: (v: boolean) => void;
   setMode: (mode: Mode) => void;
+  /** Read localStorage `control-v0-mode` into state (no side effects). */
+  hydrateSeedLiveMode: () => void;
+  /**
+   * Switch Demo ↔ Live. Persists `control-v0-mode`.
+   * Demo → reset to Monday seed (clear applied ids; inbox files kept).
+   * Live → apply durable inboxes (current poll path).
+   */
+  setSeedLiveMode: (mode: SeedLiveMode) => void;
   startFocus: (workstreamId?: string) => void;
   endFocus: () => void;
   setSelectedReview: (id: string | null) => void;
@@ -128,6 +144,8 @@ interface ControlState {
 
   /**
    * Clear persisted Zustand (localStorage key control-v0) and rehydrate from seed.
+   * Clears applied inbox ids so Demo ignores prior live merges; does NOT delete
+   * inbox files or break watchers. Forces seedLiveMode=demo (control-v0-mode).
    * Used by ⌘K "Reset demo state" and after POST /api/demo/reset.
    */
   resetDemoState: () => void;
@@ -158,6 +176,7 @@ export const useControlStore = create<ControlState>()(
     (set, get) => ({
       clockLabel: initial.clockLabel,
       mode: initial.mode,
+      seedLiveMode: DEFAULT_SEED_LIVE_MODE,
       focusWorkstreamId: initial.focusWorkstreamId,
       dayStrip: initial.dayStrip,
       workstreams: initial.workstreams as Workstream[],
@@ -191,6 +210,26 @@ export const useControlStore = create<ControlState>()(
         get().workstreams.filter((w) => w.active !== false),
 
       setMode: (mode) => set({ mode }),
+
+      hydrateSeedLiveMode: () => {
+        set({ seedLiveMode: readSeedLiveMode() });
+      },
+
+      setSeedLiveMode: (mode) => {
+        writeSeedLiveMode(mode);
+        set({ seedLiveMode: mode });
+        // Optional QA echo — ignore failures (offline / no server).
+        void fetch("/api/demo/mode", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode }),
+        }).catch(() => {});
+        if (mode === "demo") {
+          get().resetDemoState();
+          return;
+        }
+        void get().syncExternalInboxes();
+      },
 
       startFocus: (workstreamId) => {
         const ws =
@@ -387,6 +426,7 @@ export const useControlStore = create<ControlState>()(
       },
 
       syncGithubInbox: async () => {
+        if (get().seedLiveMode !== "live") return;
         try {
           const res = await fetch("/api/github/inbox");
           if (!res.ok) return;
@@ -558,6 +598,7 @@ export const useControlStore = create<ControlState>()(
       },
 
       syncSlackInbox: async () => {
+        if (get().seedLiveMode !== "live") return;
         try {
           const res = await fetch("/api/slack/inbox");
           if (!res.ok) return;
@@ -573,6 +614,8 @@ export const useControlStore = create<ControlState>()(
       },
 
       syncExternalInboxes: async () => {
+        // Demo: APIs still accept watcher POSTs; UI must not apply inbox into Zustand.
+        if (get().seedLiveMode !== "live") return;
         await Promise.all([
           get().syncGithubInbox(),
           get().syncSlackInbox(),
@@ -581,6 +624,7 @@ export const useControlStore = create<ControlState>()(
 
       resetDemoState: () => {
         // Clear persisted Zustand key control-v0, then rehydrate in-memory from seed.
+        // Does NOT delete durable inbox files or watch/follows — soft-ignore via cleared applied ids.
         try {
           useControlStore.persist.clearStorage();
         } catch {
@@ -590,9 +634,11 @@ export const useControlStore = create<ControlState>()(
             /* ignore */
           }
         }
+        writeSeedLiveMode("demo");
         set({
           clockLabel: initial.clockLabel,
           mode: initial.mode,
+          seedLiveMode: "demo",
           focusWorkstreamId: initial.focusWorkstreamId,
           dayStrip: initial.dayStrip,
           workstreams: initial.workstreams as Workstream[],

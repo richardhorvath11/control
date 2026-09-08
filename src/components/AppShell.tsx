@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { Sidebar } from "./Sidebar";
 import { CommandPalette } from "./CommandPalette";
 import { ConfirmModal } from "./ConfirmModal";
+import { ModeBanner } from "./ModeBanner";
 import { useControlStore } from "@/lib/store";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -12,15 +13,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const unsub = useControlStore.persist.onFinishHydration(() => {
+      useControlStore.getState().hydrateSeedLiveMode();
       useControlStore.getState().setHasHydrated(true);
-      // Pull any durable GitHub inbox effects after hydrate (no-op if empty).
+      // Live only: pull durable GitHub/Slack inbox effects after hydrate.
+      // Demo: skip apply so Monday seed is not overwritten by disk inboxes.
       void useControlStore.getState().syncExternalInboxes();
     });
     void useControlStore.persist.rehydrate();
     return unsub;
   }, []);
 
-  // Poll GitHub inbox so watcher POSTs land in Attention without a feed UI.
+  // Poll external inboxes so watcher POSTs land in Attention when Live.
   useEffect(() => {
     const tick = () => {
       if (!useControlStore.getState()._hasHydrated) return;
@@ -45,7 +48,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen min-w-desktop">
       <Sidebar />
-      <main className="flex-1 min-w-0 overflow-auto">{children}</main>
+      <div className="flex-1 min-w-0 flex flex-col">
+        <ModeBanner />
+        <main className="flex-1 min-w-0 overflow-auto">{children}</main>
+      </div>
       <CommandPalette />
       <ConfirmModal />
     </div>

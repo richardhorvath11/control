@@ -10,7 +10,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). You land on **Now** in morning mode with the seeded Monday (9:12 AM).
+Open [http://localhost:3000](http://localhost:3000). You land on **Now** in morning mode with the seeded Monday (9:12 AM). Default UI mode is **Demo** (`control-v0-mode`); switch to **Live** in the sidebar footer or ⌘K after watchers are configured.
 
 ```bash
 npm run build   # production build
@@ -215,26 +215,45 @@ curl -sS -X POST http://localhost:3000/api/github/inbox \
   }'
 ```
 
-### Offline vs live
+### Offline vs live (inbox presence)
 
 - **Offline**: empty `.control/github-inbox/` + `.control/slack-inbox/`, mocked `/source/*` for seed provenance only.
-- **Live**: watcher POSTs events; Attention Items carry https `provenance.url` and Open source opens the real GitHub/checks page in a new tab.
+- **Live data path**: watcher POSTs events; Attention Items carry https `provenance.url` and Open source opens the real GitHub/checks page in a new tab.
 
+### Demo vs Live mode (chip 5)
+
+Monday seed and durable inboxes must not fight. **Not auth** — one UI control (sidebar footer toggle + ⌘K) plus optional API.
+
+| Mode | Boot / Now |
+|------|------------|
+| **Demo** (default) | Zustand from seed; **ignore** applying github/slack inbox into the UI (APIs still accept watcher POSTs). Banner: `Demo · seeded Monday`. |
+| **Live** | Hydrate seed skeleton only if empty; **apply** durable inboxes on load/poll (AppShell). Banner: `Live · watching {repo}#{pr}` + active follow count. |
+
+- Persist: `localStorage` key **`control-v0-mode`** = `demo` or `live` (default **`demo`**).
+- Zustand persist remains **`control-v0`** (attention, applied ids, etc.).
+- **Dogfood**: configure watchers, then **Switch to Live** so inbox rows appear; stay in Demo for Monday walkthroughs.
+- Watchers keep POSTing regardless of mode. Cap `NEEDS_YOU_EXTERNAL_CAP = 5` unchanged. pr-follows / coalesce / checkpoint merge untouched.
+
+```bash
+# Optional QA echo (client still owns localStorage)
+curl -sS -X POST http://localhost:3000/api/demo/mode \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"live"}'
+curl -sS http://localhost:3000/api/demo/status
+```
 
 ### Demo / E2E reset
 
 Persisted Zustand (`localStorage` key **`control-v0`**) can pollute UI E2E after inbox floods. Reset options:
 
-1. **⌘K → “Reset demo state”** — clears `control-v0` and rehydrates from seed (client).
-2. **`POST /api/demo/reset`** — returns client clear instructions; optional `clearInboxes=true` (query or JSON body) deletes `.control/github-inbox/*.json` and `.control/slack-inbox/*.json`. **Does not wipe** `.control/watch.json`.
-3. **QA one-liner**: `localStorage.removeItem('control-v0')` then reload.
+1. **⌘K → “Reset demo state”** — clears `control-v0`, clears applied inbox ids, forces **Demo** (`control-v0-mode=demo`), rehydrates Monday seed. **Does not delete** inbox files or break watchers.
+2. **`POST /api/demo/reset`** — returns client clear instructions; optional `clearInboxes=true` (query or JSON body) deletes `.control/github-inbox/*.json` and `.control/slack-inbox/*.json`. Prefer leaving inboxes on disk. **Does not wipe** `.control/watch.json` or `.control/pr-follows.json`.
+3. **QA one-liner**: `localStorage.removeItem('control-v0')` then reload (also set `control-v0-mode` to `demo` if needed).
 
 ```bash
+curl -sS -X POST 'http://localhost:3000/api/demo/reset'
+# optional hard wipe of inbox JSON only:
 curl -sS -X POST 'http://localhost:3000/api/demo/reset?clearInboxes=true'
-# or
-curl -sS -X POST http://localhost:3000/api/demo/reset \
-  -H 'Content-Type: application/json' \
-  -d '{"clearInboxes":true}'
 ```
 
 
@@ -277,7 +296,7 @@ Agent reads `watch.slackPrChannelId`, finds messages with PR URLs for `watch.rep
 
 Curls `POST /api/slack/inbox`. No Slack token in repo or Control.
 
-Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, Seed/Live (chip 5), infinite follows, raising external Needs-you cap, full checkpoint rewrite, CI↔review coalesce.
+Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, infinite follows, raising external Needs-you cap, full checkpoint rewrite, CI↔review coalesce, auth / multi-tenant.
 
 ## Stack assumptions
 
@@ -309,12 +328,14 @@ Workstreams: Staging credential rotation (human review), Search ranking experime
 | `GET/POST /api/slack/outbox` | Durable Slack outbox for MCP poster |
 | `GET/POST /api/github/inbox` | Durable GitHub inbox (watcher → Control) |
 | `GET/POST /api/slack/inbox` | Durable Slack PR-link inbox (watcher → Control) |
-| `POST /api/demo/reset` | Clear demo persist instruction; optional `clearInboxes=true` (keeps watch.json) |
+| `POST /api/demo/reset` | Clear demo persist instruction; optional `clearInboxes=true` (keeps watch.json / pr-follows) |
+| `GET/POST /api/demo/mode` | Optional QA mode echo (`demo` or `live`); client key `control-v0-mode` |
+| `GET /api/demo/status` | Watch repo/pr + active follow count for Live banner |
 | `POST /api/slack/outbox/:id/ack` | Mark posted after MCP send |
 | `POST /api/slack/outbox/:id/fail` | Mark failed |
 | `POST /api/slack/post` | Soft-disabled (410) |
 
-Command palette (⌘K) opens the launcher (not chat). Includes **Reset demo state** (clears `localStorage` key `control-v0` and rehydrates from seed).
+Command palette (⌘K) opens the launcher (not chat). Includes **Switch to Live / Switch to Demo** and **Reset demo state** (clears `control-v0`, forces Demo mode, rehydrates from seed without deleting inbox files).
 
 ## Click-through
 

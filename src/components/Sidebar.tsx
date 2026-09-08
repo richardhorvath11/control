@@ -49,6 +49,8 @@ export function Sidebar() {
   const startFocus = useControlStore((s) => s.startFocus);
   const endFocus = useControlStore((s) => s.endFocus);
   const setLauncherOpen = useControlStore((s) => s.setLauncherOpen);
+  const seedLiveMode = useControlStore((s) => s.seedLiveMode);
+  const setSeedLiveMode = useControlStore((s) => s.setSeedLiveMode);
 
   return (
     <aside className="w-[220px] shrink-0 border-r border-border bg-bg flex flex-col sticky top-0 h-screen">
@@ -117,6 +119,23 @@ export function Sidebar() {
       </div>
 
       <div className="mt-auto p-3 space-y-2 border-t border-border">
+        <button
+          type="button"
+          onClick={() =>
+            setSeedLiveMode(seedLiveMode === "live" ? "demo" : "live")
+          }
+          className={`w-full btn-secondary justify-between text-[12px] ${
+            seedLiveMode === "live"
+              ? "border-running/40 text-running"
+              : "border-amber/40 text-amber"
+          }`}
+          title="Demo keeps Monday seed; Live applies durable inboxes"
+        >
+          <span>{seedLiveMode === "live" ? "Live" : "Demo"}</span>
+          <span className="text-[10px] text-muted font-normal">
+            {seedLiveMode === "live" ? "Switch to Demo" : "Switch to Live"}
+          </span>
+        </button>
         <button
           type="button"
           onClick={() => (mode === "focus" ? endFocus() : startFocus())}
