@@ -1,4 +1,4 @@
-# Control — V0.6 (standing watchers)
+# Control — V0.7 (chip 1: auto-kick review worker)
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
 
@@ -242,6 +242,25 @@ curl -sS -X POST http://localhost:3000/api/demo/mode \
 curl -sS http://localhost:3000/api/demo/status
 ```
 
+### Live auto-kick review worker (V0.7 chip 1)
+
+In **Live** mode, when a coalesce-class Needs-you appears (`ext-att-review-*` from Slack `pr_link` and/or GitHub `review.requested`), Control **automatically** enqueues one canned independent PR review worker bound to that `repo#PR` + workstream.
+
+| | |
+|--|--|
+| Idempotency | `auto-review:{coalesceKey}` persisted in Zustand (`autoKickedReviewKeys`) — refresh / second Slack+GitHub merge does not double-kick |
+| Agent | `Independent review · {repo}#{pr}` · Running → Complete (simulated 3–8s) |
+| Landing | Findings → **Review only** (badge++); **no toast**; Needs-you stays open |
+| Demo | Auto-kick **disabled**; Monday seed + manual Delegate unchanged |
+| Demo reset | Clears `autoKickedReviewKeys` so a later Live session can kick again |
+| Cap | `NEEDS_YOU_EXTERNAL_CAP = 5` unchanged |
+
+```bash
+npx tsx scripts/smoke-auto-kick-review.ts
+```
+
+Out of chip 1: real LLM/MCP worker, live PR snapshot panel, GitHub comment outbox, `watch.autoReview` policy, agent builder / free-form prompt, toasts, chips 2–5.
+
 ### Demo / E2E reset
 
 Persisted Zustand (`localStorage` key **`control-v0`**) can pollute UI E2E after inbox floods. Reset options:
@@ -271,6 +290,7 @@ Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slac
 | GitHub state | `.control/github-watcher-state.json` (gitignored) |
 | PR follows (chip 4) | `.control/pr-follows.json` (gitignored; Slack apply upserts) |
 | Follow smoke | `npx tsx scripts/smoke-pr-follows.ts` |
+| Auto-kick smoke | `npx tsx scripts/smoke-auto-kick-review.ts` |
 
 ### One GitHub tick
 
@@ -303,7 +323,7 @@ Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, infinite fol
 - **Next.js App Router** + TypeScript + Tailwind CSS
 - **Zustand** client store hydrated from `src/lib/seed.json`
 - No auth, no live Slack ingestion, no database, **no GitHub/Slack tokens in Control**
-- Agent delegation simulated with a 3-8s timer; completion increments the Review badge only (no toasts)
+- Agent delegation + Live auto-kick PR review simulated with a 3-8s timer; completion increments the Review badge only (no toasts)
 - Slack write for the Priya draft only (confirm-gated outbox -> MCP)
 
 ## Seeded Monday
@@ -349,4 +369,4 @@ Command palette (⌘K) opens the launcher (not chat). Includes **Switch to Live 
 
 ## Explicit cuts
 
-Team surface, auth, org-wide GitHub, multi Slack channels, webhooks-in-Control, NLP without URL, live Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological feed, agent builder, lorem, auto-send without confirm, posting outside #control-e2e, Slack app / bot-token inside Next, GitHub App / PAT inside Control, raising external Needs-you cap without product call.
+Team surface, auth, org-wide GitHub, multi Slack channels, webhooks-in-Control, NLP without URL, live Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological feed, agent builder / free-form prompt, real LLM worker, live PR snapshot, GitHub comment outbox, watch.autoReview policy, auto-merge, lorem, auto-send without confirm, posting outside #control-e2e, Slack app / bot-token inside Next, GitHub App / PAT inside Control, raising external Needs-you cap without product call.

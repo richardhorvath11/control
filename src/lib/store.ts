@@ -23,9 +23,19 @@ import {
   prependChangedEntry,
 } from "./merge-checkpoint";
 import {
+  coalesceKeyFromAttention,
   isReviewAskNeedsYou,
+  reviewAskCoalesceKey,
   upsertReviewAskAttention,
 } from "./coalesce-review-ask";
+import {
+  autoReviewKeyFromRepoPr,
+  buildPrReviewAgent,
+  buildPrReviewItem,
+  parseRepoPrFromCoalesceKey,
+  prReviewSimDelayMs,
+  type StartPrReviewWorkerArgs,
+} from "./pr-review-worker";
 
 const initial = seed as SeedData;
 
@@ -52,6 +62,12 @@ interface ControlState {
   appliedGithubEventIds: string[];
   /** Event ids already merged from Slack inbox into this store */
   appliedSlackEventIds: string[];
+  /**
+   * Idempotency keys for Live auto-kick PR review workers:
+   * auto-review:{coalesceKey} (e.g. auto-review:richardhorvath11/battle-buddy#32).
+   * Cleared on Demo reset so a later Live session can kick again.
+   */
+  autoKickedReviewKeys: string[];
   selectedReviewId: string | null;
   confirmModal: null | {
     title: string;
@@ -152,6 +168,14 @@ interface ControlState {
 
   delegate: (delegationId: string) => void;
   delegateAttention: (attentionId: string) => void;
+  /**
+   * Enqueue canned independent PR review worker (Running → Complete → Review).
+   * Auto: Live only, once per auto-review:{coalesceKey}; does not resolve Needs-you.
+   * Manual: existing Delegate path; may resolve attention when attentionId set.
+   */
+  startPrReviewWorker: (args: StartPrReviewWorkerArgs) => void;
+  /** Live: auto-kick once per coalesce-class Needs-you not yet in autoKickedReviewKeys. */
+  maybeAutoKickReviewAsks: () => void;
 
   approveReview: (id: string) => void;
   applyApproveReview: (id: string) => void;
@@ -190,6 +214,7 @@ export const useControlStore = create<ControlState>()(
       usedDelegationIds: [],
       appliedGithubEventIds: [],
       appliedSlackEventIds: [],
+      autoKickedReviewKeys: [],
       selectedReviewId: initial.reviewQueue[0]?.id ?? null,
       confirmModal: null,
       launcherOpen: false,
@@ -228,7 +253,11 @@ export const useControlStore = create<ControlState>()(
           get().resetDemoState();
           return;
         }
-        void get().syncExternalInboxes();
+        // Demo→Live: kick once for review-asks already present, then apply inboxes.
+        get().maybeAutoKickReviewAsks();
+        void get().syncExternalInboxes().then(() => {
+          get().maybeAutoKickReviewAsks();
+        });
       },
 
       startFocus: (workstreamId) => {
@@ -423,6 +452,7 @@ export const useControlStore = create<ControlState>()(
           appliedGithubEventIds: Array.from(appliedIds),
         });
         get().recomputeMode();
+        get().maybeAutoKickReviewAsks();
       },
 
       syncGithubInbox: async () => {
@@ -595,6 +625,7 @@ export const useControlStore = create<ControlState>()(
           appliedSlackEventIds: Array.from(appliedIds),
         });
         get().recomputeMode();
+        get().maybeAutoKickReviewAsks();
       },
 
       syncSlackInbox: async () => {
@@ -652,6 +683,7 @@ export const useControlStore = create<ControlState>()(
           usedDelegationIds: [],
           appliedGithubEventIds: [],
           appliedSlackEventIds: [],
+          autoKickedReviewKeys: [],
           selectedReviewId: initial.reviewQueue[0]?.id ?? null,
           confirmModal: null,
           launcherOpen: false,
@@ -666,6 +698,126 @@ export const useControlStore = create<ControlState>()(
         set({ mode: open.length === 0 ? "clear" : "morning" });
       },
 
+      startPrReviewWorker: (args) => {
+        const repo = args.repo;
+        const pr = Math.trunc(args.pr);
+        if (!repo || !Number.isFinite(pr) || pr <= 0) return;
+
+        const coalesceKey = reviewAskCoalesceKey(repo, pr);
+        const idemKey = autoReviewKeyFromRepoPr(repo, pr);
+
+        if (args.source === "auto") {
+          if (get().seedLiveMode !== "live") return;
+          if (get().autoKickedReviewKeys.includes(idemKey)) return;
+          set({
+            autoKickedReviewKeys: [...get().autoKickedReviewKeys, idemKey],
+          });
+        }
+
+        const agentId = uid("agent");
+        const delay = prReviewSimDelayMs();
+        const newAgent = buildPrReviewAgent({
+          id: agentId,
+          repo,
+          pr,
+          workstreamId: args.workstreamId,
+          source: args.source,
+        });
+
+        set({
+          agents: [...get().agents, newAgent],
+        });
+
+        // Auto-kick does not resolve Needs-you. Manual may resolve canned rows.
+        if (args.source === "manual" && args.attentionId) {
+          get().resolveAttention(args.attentionId);
+        }
+
+        const provenance = args.attentionProvenance;
+        const workstreamId = args.workstreamId;
+        const source = args.source;
+
+        window.setTimeout(() => {
+          const reviewId = uid("rev");
+          const findingId = uid("f");
+          const reviewItem = buildPrReviewItem({
+            id: reviewId,
+            findingId,
+            repo,
+            pr,
+            workstreamId,
+            agentId,
+            attentionProvenance: provenance,
+          });
+
+          set({
+            agents: get().agents.map((a) =>
+              a.id === agentId
+                ? {
+                    ...a,
+                    status: "Complete",
+                    needsReview: true,
+                    reviewItemId: reviewId,
+                    completedAt: "just now",
+                    detail: "Complete — waiting in Review.",
+                  }
+                : a
+            ),
+            reviewQueue: [...get().reviewQueue, reviewItem],
+            workstreams: get().workstreams.map((w) => {
+              if (!workstreamId || w.id !== workstreamId) return w;
+              const agentIds = w.agentIds.includes(agentId)
+                ? w.agentIds
+                : [...w.agentIds, agentId];
+              return {
+                ...w,
+                agentIds,
+                lastActive: "just now",
+              };
+            }),
+          });
+
+          // Optional checkpoint Latest (nice-to-have); badge only — no toast.
+          if (workstreamId) {
+            const targetWs = get().workstreams.find((w) => w.id === workstreamId);
+            if (targetWs && !targetWs.ephemeral) {
+              const kickLabel =
+                source === "auto"
+                  ? `Auto-kick review · ${coalesceKey}`
+                  : `Delegated review · ${coalesceKey}`;
+              get().updateCheckpoint(
+                workstreamId,
+                `${targetWs.checkpoint} ${kickLabel} completed and landed in Review.`
+              );
+            }
+          }
+        }, delay);
+      },
+
+      maybeAutoKickReviewAsks: () => {
+        if (get().seedLiveMode !== "live") return;
+        for (const att of get().attention) {
+          if (!isReviewAskNeedsYou(att)) continue;
+          // Only open Needs-you on Now (not cap-demoted FYI).
+          if (att.routing !== "now" || att.resolved) continue;
+          const key =
+            att.coalesceKey ||
+            coalesceKeyFromAttention(att) ||
+            null;
+          if (!key) continue;
+          const parsed = parseRepoPrFromCoalesceKey(key);
+          if (!parsed) continue;
+          get().startPrReviewWorker({
+            repo: parsed.repo,
+            pr: parsed.pr,
+            workstreamId: att.workstreamId,
+            attentionId: att.id,
+            source: "auto",
+            attentionProvenance: att.provenance,
+          });
+        }
+      },
+
       delegate: (delegationId) => {
         const del = get().suggestedDelegations.find(
           (d) => d.id === delegationId
@@ -673,7 +825,7 @@ export const useControlStore = create<ControlState>()(
         if (!del || get().usedDelegationIds.includes(delegationId)) return;
 
         const agentId = uid("agent");
-        const delay = 3000 + Math.floor(Math.random() * 5000);
+        const delay = prReviewSimDelayMs();
 
         // BUG-5: Priya investigate → ephemeral workstream
         let workstreamId = del.workstreamId;
@@ -1312,6 +1464,7 @@ export const useControlStore = create<ControlState>()(
         usedDelegationIds: state.usedDelegationIds,
         appliedGithubEventIds: state.appliedGithubEventIds,
         appliedSlackEventIds: state.appliedSlackEventIds,
+        autoKickedReviewKeys: state.autoKickedReviewKeys,
         fyi: state.fyi,
         selectedReviewId: state.selectedReviewId,
         sources: state.sources,

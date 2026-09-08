@@ -223,12 +223,11 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                   Evidence
                 </div>
                 <ul className="space-y-2">
-                  {finding.evidence.map((e, i) => (
-                    <li key={`${e.locator}-${i}`}>
-                      <Link
-                        href={`/source/${e.kind}/${e.sourceId}`}
-                        className="row block px-3 py-2.5 hover:border-muted/40"
-                      >
+                  {finding.evidence.map((e, i) => {
+                    const external =
+                      e.url && /^https:\/\//i.test(e.url) ? e.url : null;
+                    const body = (
+                      <>
                         <div className="flex items-center gap-2">
                           <span className="chip font-mono text-[10px]">
                             {e.kind}
@@ -243,9 +242,30 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                         <div className="mt-1 text-[12px] text-muted italic">
                           “{e.excerpt}”
                         </div>
-                      </Link>
-                    </li>
-                  ))}
+                      </>
+                    );
+                    return (
+                      <li key={`${e.locator}-${i}`}>
+                        {external ? (
+                          <a
+                            href={external}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="row block px-3 py-2.5 hover:border-muted/40"
+                          >
+                            {body}
+                          </a>
+                        ) : (
+                          <Link
+                            href={`/source/${e.kind}/${e.sourceId}`}
+                            className="row block px-3 py-2.5 hover:border-muted/40"
+                          >
+                            {body}
+                          </Link>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
               <div className="flex flex-wrap gap-2 pt-2">
@@ -263,14 +283,25 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                 >
                   Reject
                 </button>
-                {finding.evidence[0] && (
-                  <Link
-                    href={`/source/${finding.evidence[0].kind}/${finding.evidence[0].sourceId}`}
-                    className="btn-ghost"
-                  >
-                    Open source
-                  </Link>
-                )}
+                {finding.evidence[0] &&
+                  (finding.evidence[0].url &&
+                  /^https:\/\//i.test(finding.evidence[0].url) ? (
+                    <a
+                      href={finding.evidence[0].url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn-ghost"
+                    >
+                      Open source
+                    </a>
+                  ) : (
+                    <Link
+                      href={`/source/${finding.evidence[0].kind}/${finding.evidence[0].sourceId}`}
+                      className="btn-ghost"
+                    >
+                      Open source
+                    </Link>
+                  ))}
               </div>
             </section>
           )}
