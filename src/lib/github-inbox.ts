@@ -1,7 +1,10 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { GITHUB_NEEDS_YOU_CAP } from "./github-constants";
-export { GITHUB_NEEDS_YOU_CAP };
+import {
+  GITHUB_NEEDS_YOU_CAP,
+  NEEDS_YOU_EXTERNAL_CAP,
+} from "./github-constants";
+export { GITHUB_NEEDS_YOU_CAP, NEEDS_YOU_EXTERNAL_CAP };
 
 export const CONTROL_DIR = path.join(process.cwd(), ".control");
 export const INBOX_DIR = path.join(CONTROL_DIR, "github-inbox");
@@ -34,14 +37,26 @@ export interface GitHubInboxEvent {
   occurred_at: string;
   provenance: GitHubEventProvenance;
   workstream_id?: string;
-  /** For review.requested: Needs you if true else FYI */
+  /** For review.requested: Needs you if true else FYI (personal / user path) */
   action_on_user?: boolean;
+  /** review.requested: personal vs team/CODEOWNERS */
+  requested_via?: "user" | "team";
+  /** Required when requested_via=team — must be listed in watch.teams */
+  team_slug?: string;
+  /** Optional login when requested_via=user (dedupe identifier) */
+  requested_user?: string;
 }
 
 export interface WatchConfig {
   repo: string;
   pr: number;
   workstreamId: string;
+  /** Team/CODEOWNERS slugs that may create Needs-you on review.requested */
+  teams: string[];
+  /** Single Slack channel watched for PR-link → Needs-you */
+  slackPrChannelId: string;
+  /** Display name for Needs-you why (e.g. #control-e2e) */
+  slackPrChannelName?: string;
 }
 
 export type AttentionRouting = "now" | "fyi" | "skip";
@@ -54,7 +69,7 @@ export interface GithubAttentionEffect {
   workstreamId: string;
   suggestedAction: "open" | "delegate" | "open_review" | "resume";
   provenance: {
-    kind: "github";
+    kind: "github" | "slack";
     title: string;
     locator: string;
     excerpt: string;
@@ -83,6 +98,9 @@ export interface GithubRoutingEffects {
   fyiLine: string | null;
   workstreamPatch: GithubWorkstreamPatch | null;
   capped?: boolean;
+  /** True when team review.requested was ignored (team not in watch.teams) */
+  ignored?: boolean;
+  ignoreReason?: string;
 }
 
 export interface StoredGithubInboxItem {
@@ -96,14 +114,15 @@ export interface StoredGithubInboxItem {
 }
 
 const DEFAULT_WATCH: WatchConfig = {
-  repo: "acme/nightingale",
-  pr: 1847,
+  repo: "richardhorvath11/battle-buddy",
+  pr: 32,
   workstreamId: "ws-cred",
+  teams: [],
+  slackPrChannelId: "C0BVCSA4T2P",
+  slackPrChannelName: "#control-e2e",
 };
 
-
 function safeId(id: string): boolean {
-  // Allow typical event ids from agents (hex, uuid, slug)
   return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/.test(id);
 }
 
@@ -162,14 +181,44 @@ function normalizeWatch(input: Partial<WatchConfig> | null): WatchConfig {
     typeof input?.workstreamId === "string" && input.workstreamId.trim()
       ? input.workstreamId.trim()
       : DEFAULT_WATCH.workstreamId;
-  return { repo, pr, workstreamId };
+  const teams = Array.isArray(input?.teams)
+    ? input!.teams
+        .filter((t): t is string => typeof t === "string" && !!t.trim())
+        .map((t) => t.trim())
+    : [...DEFAULT_WATCH.teams];
+  const slackPrChannelId =
+    typeof input?.slackPrChannelId === "string" && input.slackPrChannelId.trim()
+      ? input.slackPrChannelId.trim()
+      : DEFAULT_WATCH.slackPrChannelId;
+  const slackPrChannelName =
+    typeof input?.slackPrChannelName === "string" &&
+    input.slackPrChannelName.trim()
+      ? input.slackPrChannelName.trim()
+      : DEFAULT_WATCH.slackPrChannelName;
+  return { repo, pr, workstreamId, teams, slackPrChannelId, slackPrChannelName };
 }
 
+/**
+ * Dedupe key. For review.requested: (type, repo, pr_number, team_or_user).
+ * Otherwise: (type, pr_number, head_sha).
+ */
 export function dedupeKey(event: {
   type: string;
+  repo?: string;
   pr_number: number;
   head_sha?: string;
+  requested_via?: "user" | "team";
+  team_slug?: string;
+  requested_user?: string;
 }): string {
+  if (event.type === "review.requested") {
+    const via = event.requested_via === "team" ? "team" : "user";
+    const ident =
+      via === "team"
+        ? `team:${event.team_slug ?? ""}`
+        : `user:${event.requested_user ?? "self"}`;
+    return `review.requested|${event.repo ?? ""}|${event.pr_number}|${ident}`;
+  }
   return `${event.type}|${event.pr_number}|${event.head_sha ?? ""}`;
 }
 
@@ -237,6 +286,26 @@ export function validateGithubInboxEvent(
   if (b.action_on_user !== undefined && typeof b.action_on_user !== "boolean") {
     return { ok: false, error: "action_on_user must be a boolean when present" };
   }
+  if (b.requested_via !== undefined) {
+    if (b.requested_via !== "user" && b.requested_via !== "team") {
+      return { ok: false, error: 'requested_via must be "user" or "team"' };
+    }
+  }
+  if (b.team_slug !== undefined && typeof b.team_slug !== "string") {
+    return { ok: false, error: "team_slug must be a string when present" };
+  }
+  if (b.requested_user !== undefined && typeof b.requested_user !== "string") {
+    return { ok: false, error: "requested_user must be a string when present" };
+  }
+
+  if (b.type === "review.requested" && b.requested_via === "team") {
+    if (typeof b.team_slug !== "string" || !b.team_slug.trim()) {
+      return {
+        ok: false,
+        error: "team_slug is required when requested_via=team",
+      };
+    }
+  }
 
   const event: GitHubInboxEvent = {
     id: b.id.trim(),
@@ -259,6 +328,15 @@ export function validateGithubInboxEvent(
   }
   if (typeof b.action_on_user === "boolean") {
     event.action_on_user = b.action_on_user;
+  }
+  if (b.requested_via === "user" || b.requested_via === "team") {
+    event.requested_via = b.requested_via;
+  }
+  if (typeof b.team_slug === "string" && b.team_slug.trim()) {
+    event.team_slug = b.team_slug.trim();
+  }
+  if (typeof b.requested_user === "string" && b.requested_user.trim()) {
+    event.requested_user = b.requested_user.trim();
   }
 
   return { ok: true, event };
@@ -386,7 +464,6 @@ export function routeGithubEvent(
 
   switch (event.type) {
     case "pr.pushed": {
-      // FYI only — never Needs you
       fyiLine = `GitHub · ${event.repo}#${event.pr_number}: ${event.summary}`;
       workstreamPatch = {
         ...baseWs(`PR pushed: ${event.summary}`),
@@ -429,6 +506,37 @@ export function routeGithubEvent(
       break;
     }
     case "review.requested": {
+      // Team/CODEOWNERS path: only Needs-you when team_slug ∈ watch.teams
+      if (event.requested_via === "team") {
+        const slug = event.team_slug ?? "";
+        const allowed = watch.teams.includes(slug);
+        if (!allowed) {
+          return {
+            attention: null,
+            fyiLine: null,
+            workstreamPatch: null,
+            capped: false,
+            ignored: true,
+            ignoreReason: `team_slug "${slug}" not in watch.teams`,
+          };
+        }
+        attention = makeAttention(
+          "now",
+          `Review requested · ${event.repo}#${event.pr_number}`,
+          event.summary || `Team @${slug} review requested`
+        );
+        workstreamPatch = {
+          ...baseWs(
+            `Review requested via team @${slug}: ${event.summary}`
+          ),
+          status: "blocked-on-you",
+          waitingOn: "you",
+          phase: "Human review",
+        };
+        break;
+      }
+
+      // Personal / user path (requested_via=user or missing) — same as before
       if (event.action_on_user) {
         attention = makeAttention(
           "now",
@@ -471,68 +579,52 @@ export function routeGithubEvent(
     }
   }
 
-  // Cap is enforced after write via enforceGithubNeedsYouCap (older drop).
   void _existingNeedsYouFromGithub;
   return { attention, fyiLine, workstreamPatch, capped: false };
 }
 
+/** Demote oldest external Needs-you across github (+ optional slack items). */
+export async function demoteGithubNeedsYouItem(
+  item: StoredGithubInboxItem,
+  cap: number
+): Promise<void> {
+  if (!item.effects?.attention) return;
+  const att = item.effects.attention;
+  const fyiLine =
+    item.effects.fyiLine ??
+    `GitHub (capped) · ${item.event.repo}#${item.event.pr_number}: ${item.event.summary}`;
+  const next: StoredGithubInboxItem = {
+    ...item,
+    effects: {
+      ...item.effects,
+      capped: true,
+      fyiLine,
+      attention: {
+        ...att,
+        routing: "fyi",
+        why: `${att.why} (older Needs-you demoted — external cap ${cap})`,
+      },
+    },
+  };
+  await writeInboxItem(next);
+}
 
 /**
- * Keep at most GITHUB_NEEDS_YOU_CAP GitHub Needs-you items.
- * When over cap, older GitHub Needs-you drop to FYI (ingest stays unlimited).
+ * Keep at most NEEDS_YOU_EXTERNAL_CAP external Needs-you (github inbox slice).
+ * Prefer enforceExternalNeedsYouCap which spans github + slack.
  */
 export async function enforceGithubNeedsYouCap(
-  cap: number = GITHUB_NEEDS_YOU_CAP
+  cap: number = NEEDS_YOU_EXTERNAL_CAP
 ): Promise<StoredGithubInboxItem[]> {
-  const all = await listInboxItems();
-  const needsYou = all
-    .filter(
-      (item) =>
-        item.applied &&
-        !item.duplicate &&
-        item.effects?.attention?.routing === "now"
-    )
-    .sort((a, b) => {
-      const ta = a.event.occurred_at || a.received_at;
-      const tb = b.event.occurred_at || b.received_at;
-      return ta.localeCompare(tb);
-    });
-
-  if (needsYou.length <= cap) return all;
-
-  const overflow = needsYou.length - cap;
-  const toDemote = needsYou.slice(0, overflow);
-
-  for (const item of toDemote) {
-    if (!item.effects?.attention) continue;
-    const att = item.effects.attention;
-    const fyiLine =
-      item.effects.fyiLine ??
-      `GitHub (capped) · ${item.event.repo}#${item.event.pr_number}: ${item.event.summary}`;
-    const next: StoredGithubInboxItem = {
-      ...item,
-      effects: {
-        ...item.effects,
-        capped: true,
-        fyiLine,
-        attention: {
-          ...att,
-          routing: "fyi",
-          why: `${att.why} (older Needs-you demoted — GitHub cap ${cap})`,
-        },
-      },
-    };
-    await writeInboxItem(next);
-  }
-
+  const { enforceExternalNeedsYouCap } = await import("./needs-you-cap");
+  await enforceExternalNeedsYouCap(cap);
   return listInboxItems();
 }
 
 /**
  * Accept an event into the durable inbox and apply routing.
- * Idempotent on id; also dedupes by (type, pr_number, head_sha).
- * Malformed callers must use validateGithubInboxEvent first — this never
- * writes on invalid input (caller rejects with 4xx).
+ * Idempotent on id; also dedupes by dedupeKey.
+ * Team review.requested with unknown team → stored applied=false (ignored).
  */
 export async function acceptGithubInboxEvent(
   event: GitHubInboxEvent
@@ -571,6 +663,21 @@ export async function acceptGithubInboxEvent(
 
   const needsYou = countGithubNeedsYou(all);
   const effects = routeGithubEvent(event, watch, needsYou);
+
+  // Unknown team: store but do not apply Needs-you
+  if (effects.ignored) {
+    const item: StoredGithubInboxItem = {
+      id: event.id,
+      event,
+      received_at: new Date().toISOString(),
+      applied: false,
+      duplicate: false,
+      effects,
+    };
+    await writeInboxItem(item);
+    return { item, duplicate: false, applied: false };
+  }
+
   const item: StoredGithubInboxItem = {
     id: event.id,
     event,
@@ -580,8 +687,8 @@ export async function acceptGithubInboxEvent(
     effects,
   };
   await writeInboxItem(item);
-  // Newest keeps Needs-you; older GitHub Needs-you drop when over cap.
-  await enforceGithubNeedsYouCap();
+  const { enforceExternalNeedsYouCap } = await import("./needs-you-cap");
+  await enforceExternalNeedsYouCap();
   const refreshed = (await readInboxItem(event.id)) ?? item;
   return { item: refreshed, duplicate: false, applied: true };
 }

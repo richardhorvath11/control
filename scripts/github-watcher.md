@@ -1,56 +1,39 @@
-# GitHub watcher stub (MCP → Control inbox)
+# GitHub / Slack watcher stub (MCP → Control inboxes)
 
-Control holds **no** GitHub token. A watcher agent (Grok + GitHub MCP / `gh`) polls a single watched PR and POSTs canonical events into Control.
+Control holds **no** GitHub or Slack token. A watcher agent polls a watched PR and one Slack channel, then POSTs canonical events into Control.
 
 ## Watch config
 
 - Committed example: `watch.example.json`
-- Runtime (gitignored): `.control/watch.json` — created from the example/defaults on first inbox API use
-
-Default fields:
+- Runtime (gitignored): `.control/watch.json`
 
 | Field | Default |
 |-------|---------|
-| `repo` | `acme/nightingale` |
-| `pr` | `1847` |
+| `repo` | `richardhorvath11/battle-buddy` |
+| `pr` | `32` |
 | `workstreamId` | `ws-cred` |
+| `slackPrChannelId` | `C0BVCSA4T2P` |
+| `slackPrChannelName` | `#control-e2e` |
+| `teams` | `[]` (placeholder — add team slugs to accept team `review.requested`) |
 
-## Event types (only)
+## Event types (GitHub)
 
 - `pr.pushed`
 - `ci.failed` / `ci.passed`
-- `review.requested`
+- `review.requested` (`requested_via: "user"|"team"`, `team_slug?`)
 - `review.changes_requested`
+
+## Slack
+
+- `POST /api/slack/inbox` with `type: "pr_link"` for messages in `slackPrChannelId` that contain a PR URL for `watch.repo`.
 
 ## Flow
 
-1. Read `.control/watch.json` (or `watch.example.json`).
-2. Use GitHub MCP / `gh` with credentials on the **agent host** (never in Control).
-3. For each state change, `POST /api/github/inbox` with a `GitHubInboxEvent`.
-4. Control persists under `.control/github-inbox/<id>.json` and routes into Attention Items + workstream.
-5. Idempotent: same `id` or same `(type, pr_number, head_sha)` does not duplicate Attention Items.
-6. GitHub Needs-you capped at **5**; older GitHub Needs-you drop to FYI. Ingest stays unlimited.
+1. Read `.control/watch.json`.
+2. Use GitHub/Slack MCP with credentials on the **agent host** (never in Control).
+3. `POST /api/github/inbox` or `POST /api/slack/inbox`.
+4. Control persists under `.control/github-inbox/` or `.control/slack-inbox/` and routes into Needs-you.
+5. Idempotent on event `id` (+ type-specific dedupe keys).
+6. External Needs-you capped at **`NEEDS_YOU_EXTERNAL_CAP = 5`**; oldest github|slack demote to FYI. Seed Monday items untouched.
 
-## Example `ci.failed`
-
-```bash
-curl -sS -X POST http://localhost:3000/api/github/inbox \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "id": "evt-ci-fail-001",
-    "type": "ci.failed",
-    "repo": "acme/nightingale",
-    "pr_number": 1847,
-    "head_sha": "abc1234",
-    "summary": "integration-staging failed on retry budget check",
-    "occurred_at": "2026-09-07T14:00:00.000Z",
-    "provenance": {
-      "url": "https://github.com/acme/nightingale/pull/1847/checks",
-      "title": "CI · integration-staging",
-      "kind": "ci"
-    },
-    "workstream_id": "ws-cred"
-  }'
-```
-
-No second UI — events never render as a feed. Debug: `GET /api/github/inbox`.
+No second UI — events never render as a feed. Debug: `GET /api/github/inbox`, `GET /api/slack/inbox`.

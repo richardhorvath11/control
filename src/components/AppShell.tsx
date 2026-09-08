@@ -14,7 +14,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const unsub = useControlStore.persist.onFinishHydration(() => {
       useControlStore.getState().setHasHydrated(true);
       // Pull any durable GitHub inbox effects after hydrate (no-op if empty).
-      void useControlStore.getState().syncGithubInbox();
+      void useControlStore.getState().syncExternalInboxes();
     });
     void useControlStore.persist.rehydrate();
     return unsub;
@@ -24,7 +24,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const tick = () => {
       if (!useControlStore.getState()._hasHydrated) return;
-      void useControlStore.getState().syncGithubInbox();
+      void useControlStore.getState().syncExternalInboxes();
     };
     const id = window.setInterval(tick, 4000);
     return () => window.clearInterval(id);

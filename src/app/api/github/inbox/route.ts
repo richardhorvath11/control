@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   GITHUB_NEEDS_YOU_CAP,
+  NEEDS_YOU_EXTERNAL_CAP,
+} from "@/lib/github-constants";
+import {
   acceptGithubInboxEvent,
   countGithubNeedsYou,
   ensureWatchConfig,
   listInboxItems,
   validateGithubInboxEvent,
 } from "@/lib/github-inbox";
+import { listSlackInboxItems } from "@/lib/slack-inbox";
+import { countExternalNeedsYouFromInboxes } from "@/lib/needs-you-cap";
 
 export const runtime = "nodejs";
 
@@ -15,11 +20,15 @@ export async function GET() {
   try {
     const watch = await ensureWatchConfig();
     const items = await listInboxItems();
+    const slackItems = await listSlackInboxItems();
     return NextResponse.json({
       ok: true,
       watch,
-      needsYouCap: GITHUB_NEEDS_YOU_CAP,
+      needsYouCap: NEEDS_YOU_EXTERNAL_CAP,
+      /** @deprecated alias of needsYouCap */
+      githubNeedsYouCap: GITHUB_NEEDS_YOU_CAP,
       githubNeedsYou: countGithubNeedsYou(items),
+      externalNeedsYou: countExternalNeedsYouFromInboxes(items, slackItems),
       items,
     });
   } catch (err) {
@@ -31,8 +40,9 @@ export async function GET() {
 
 /**
  * POST /api/github/inbox — accept a canonical GitHubInboxEvent.
- * Control holds NO GitHub token. Idempotent on id; dedupes by
- * (type, pr_number, head_sha). Malformed bodies return 4xx without writing.
+ * Control holds NO GitHub token. Idempotent on id; dedupes by dedupeKey.
+ * review.requested supports requested_via=user|team + team_slug.
+ * Unknown team → applied=false (ignored). Malformed bodies → 4xx, no write.
  */
 export async function POST(req: NextRequest) {
   let body: unknown;
@@ -48,19 +58,15 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    // Ensure watch exists for routing workstream defaults (no tokens).
     await ensureWatchConfig();
     const result = await acceptGithubInboxEvent(validated.event);
-    return NextResponse.json(
-      {
-        ok: true,
-        event: result.item.event,
-        applied: result.applied,
-        duplicate: result.duplicate,
-        item: result.item,
-      },
-      { status: result.duplicate && !result.item.applied ? 200 : 200 }
-    );
+    return NextResponse.json({
+      ok: true,
+      event: result.item.event,
+      applied: result.applied,
+      duplicate: result.duplicate,
+      item: result.item,
+    });
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to accept GitHub inbox event";

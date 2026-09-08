@@ -1,4 +1,4 @@
-# Control — V0.5
+# Control — V0.5+ (indirect review)
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
 
@@ -72,7 +72,11 @@ Legacy `POST /api/slack/post` is soft-disabled (HTTP 410).
 No secrets in git. Credentials (if any) live only with the Slack MCP host, not in Control.
 
 
-## GitHub ingestion (V0.5 inbox)
+## Indirect review inboxes (V0.5+)
+
+Two inbound paths into **Needs-you** (not Review): (1) GitHub team/CODEOWNERS `review.requested` via `watch.teams`; (2) Slack one-channel PR-link watch → `/api/slack/inbox`. Shared cap `NEEDS_YOU_EXTERNAL_CAP = 5`.
+
+### GitHub ingestion
 
 Mirror of the Slack outbox pattern, **inverted**: a watcher/agent POSTs canonical events → Control durable inbox → routing updates Attention Items + the watched workstream. Events never render as a chronological GitHub feed.
 
@@ -84,7 +88,22 @@ Control holds **no GitHub token**. Live credentials stay with GitHub MCP / `gh` 
 |--|--|
 | Template (committed) | `watch.example.json` |
 | Runtime (gitignored) | `.control/watch.json` — created from the example on first API use if missing |
-| Default | `{ "repo": "acme/nightingale", "pr": 1847, "workstreamId": "ws-cred" }` |
+
+Default fields:
+
+```json
+{
+  "repo": "richardhorvath11/battle-buddy",
+  "pr": 32,
+  "workstreamId": "ws-cred",
+  "slackPrChannelId": "C0BVCSA4T2P",
+  "slackPrChannelName": "#control-e2e",
+  "teams": []
+}
+```
+
+- `teams`: team/CODEOWNERS slugs for `review.requested` with `requested_via: "team"` (placeholder `[]`).
+- `slackPrChannelId` / `slackPrChannelName`: single Slack channel for PR-link Needs-you.
 
 ### Events in scope
 
@@ -99,10 +118,11 @@ CUT: opened/merged/closed, issues, comment floods, labels, assigns, org-wide wat
 | `pr.pushed` | Workstream changed + FYI only — Needs-you count unchanged |
 | `ci.passed` | Workstream state / FYI |
 | `ci.failed` | Needs you (one item) + workstream blocked; Open source → `provenance.url` |
-| `review.requested` | Needs you if `action_on_user`, else FYI |
+| `review.requested` (user) | Needs you if `action_on_user`, else FYI |
+| `review.requested` (team) | Needs you only if `team_slug` in `watch.teams`; else ignored (`applied: false`) |
 | `review.changes_requested` | Needs you (prefer Now) |
 
-Hard rules: cap GitHub-originated Needs-you at **5**; dedupe by event `id` and by `(type, pr_number, head_sha)`; no toasts; Review badge behavior unchanged.
+Hard rules: shared external Needs-you cap **`NEEDS_YOU_EXTERNAL_CAP = 5`** (alias `GITHUB_NEEDS_YOU_CAP`); applies to origin `github`|`slack` only — seed Monday Needs-you are not demoted. Dedupe by event `id`; `review.requested` also by `(review.requested, repo, pr_number, team_or_user)`; otherwise `(type, pr_number, head_sha)`. Team `review.requested` requires `team_slug` in `watch.teams`. No toasts; Review badge unchanged.
 
 ### Inbox API
 
@@ -131,10 +151,39 @@ Durable files: `.control/github-inbox/<id>.json` (under gitignored `.control/`).
 
 | Method | Path | Body | Response |
 |--------|------|------|----------|
-| `GET` | `/api/github/inbox` | — | `{ ok, watch, needsYouCap, githubNeedsYou, items }` |
-| `POST` | `/api/github/inbox` | `GitHubInboxEvent` | `{ ok, event, applied, duplicate?, item }` |
+| `GET` | `/api/github/inbox` | — | `{ ok, watch, needsYouCap, githubNeedsYou, externalNeedsYou, items }` |
+| `POST` | `/api/github/inbox` | `GitHubInboxEvent` (+ `requested_via?`, `team_slug?`, `requested_user?`) | `{ ok, event, applied, duplicate, item }` |
 
-Malformed POST → **4xx** and does not write inbox state. Offline seed Needs-you stays at the Monday 2 items until events arrive. Client polls the inbox and merges into the persisted Zustand store. When GitHub Needs-you would exceed 5, older GitHub Needs-you demote to FYI.
+Malformed POST → **4xx** and does not write inbox state. Offline seed Needs-you stays at the Monday 2 items until events arrive. Client polls the inbox and merges into the persisted Zustand store. When external (github|slack) Needs-you would exceed 5, oldest demote to FYI; seed Monday items stay.
+
+
+
+### Slack PR-link inbox
+
+Durable files: `.control/slack-inbox/<id>.json`. No Slack token in Control.
+
+**SlackInboxEvent** (`type: "pr_link"`): `id` (prefer `channel_ts`), `channel_id`, `message_ts`, `permalink`, `text_excerpt`, `repo`, `pr_number`, `occurred_at`, dual `provenance` (slack + github).
+
+Rules: channel must match `watch.slackPrChannelId`; PR URL must be for `watch.repo`; why = `Review ask in #control-e2e · PR #N`; watched PR attaches `workstreamId`, else ephemeral `Review · {repo}#{N}`.
+
+| Method | Path | Body | Response |
+|--------|------|------|----------|
+| `GET` | `/api/slack/inbox` | — | `{ ok, watch, needsYouCap, slackNeedsYou, externalNeedsYou, items }` |
+| `POST` | `/api/slack/inbox` | `SlackInboxEvent` | `{ ok, event, applied, duplicate, item }` |
+
+```bash
+curl -sS -X POST http://localhost:3000/api/slack/inbox \
+  -H "Content-Type: application/json" \
+  -d "{\"id\":\"C0BVCSA4T2P_1788810000.100001\",\"type\":\"pr_link\",\"channel_id\":\"C0BVCSA4T2P\",\"message_ts\":\"1788810000.100001\",\"permalink\":\"https://connect-8w75152.slack.com/archives/C0BVCSA4T2P/p1788810000100001\",\"text_excerpt\":\"Please review https://github.com/richardhorvath11/battle-buddy/pull/32\",\"repo\":\"richardhorvath11/battle-buddy\",\"pr_number\":32,\"occurred_at\":\"2026-09-07T22:05:00.000Z\"}"
+```
+
+Team review.requested (requires `teams` includes slug):
+
+```bash
+curl -sS -X POST http://localhost:3000/api/github/inbox \
+  -H "Content-Type: application/json" \
+  -d "{\"id\":\"rev-req-team-platform-32\",\"type\":\"review.requested\",\"repo\":\"richardhorvath11/battle-buddy\",\"pr_number\":32,\"summary\":\"CODEOWNERS @platform requested review\",\"occurred_at\":\"2026-09-07T22:00:00.000Z\",\"provenance\":{\"url\":\"https://github.com/richardhorvath11/battle-buddy/pull/32\",\"title\":\"Review requested\",\"kind\":\"review\"},\"requested_via\":\"team\",\"team_slug\":\"platform\",\"workstream_id\":\"ws-cred\"}"
+```
 
 See `scripts/github-watcher.md` for the agent sync sketch.
 
@@ -162,7 +211,7 @@ curl -sS -X POST http://localhost:3000/api/github/inbox \
 
 ### Offline vs live
 
-- **Offline**: empty `.control/github-inbox/`, mocked `/source/github/*` for seed provenance only.
+- **Offline**: empty `.control/github-inbox/` + `.control/slack-inbox/`, mocked `/source/*` for seed provenance only.
 - **Live**: watcher POSTs events; Attention Items carry https `provenance.url` and Open source opens the real GitHub/checks page in a new tab.
 
 
@@ -170,7 +219,7 @@ curl -sS -X POST http://localhost:3000/api/github/inbox \
 
 - **Next.js App Router** + TypeScript + Tailwind CSS
 - **Zustand** client store hydrated from `src/lib/seed.json`
-- No auth, no live Slack ingestion, no database, **no GitHub token in Control**
+- No auth, no live Slack ingestion, no database, **no GitHub/Slack tokens in Control**
 - Agent delegation simulated with a 3-8s timer; completion increments the Review badge only (no toasts)
 - Slack write for the Priya draft only (confirm-gated outbox -> MCP)
 
@@ -195,6 +244,7 @@ Workstreams: Staging credential rotation (human review), Search ranking experime
 | `/source/calendar/[id]` | Mocked calendar event |
 | `GET/POST /api/slack/outbox` | Durable Slack outbox for MCP poster |
 | `GET/POST /api/github/inbox` | Durable GitHub inbox (watcher → Control) |
+| `GET/POST /api/slack/inbox` | Durable Slack PR-link inbox (watcher → Control) |
 | `POST /api/slack/outbox/:id/ack` | Mark posted after MCP send |
 | `POST /api/slack/outbox/:id/fail` | Mark failed |
 | `POST /api/slack/post` | Soft-disabled (410) |
@@ -213,4 +263,4 @@ Command palette opens the launcher (not chat).
 
 ## Explicit cuts
 
-Team, auth, live Slack/Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological GitHub feed, agent builder, lorem, auto-send without confirm, posting outside #control-e2e, Slack app / bot-token chat.postMessage inside Next, GitHub App / PAT inside Control.
+Team surface, auth, org-wide GitHub, multi Slack channels, webhooks-in-Control, NLP without URL, live Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological feed, agent builder, lorem, auto-send without confirm, posting outside #control-e2e, Slack app / bot-token inside Next, GitHub App / PAT inside Control, raising external Needs-you cap without product call.

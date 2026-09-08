@@ -67,10 +67,12 @@ export interface AttentionItem {
   provenance: Provenance[];
   createdAt: string;
   resolved?: boolean;
-  /** Seed vs live GitHub inbox — used to cap GitHub Needs-you at 2 */
-  origin?: "seed" | "github";
+  /** Seed vs live external inbox — external (github|slack) Needs-you capped at NEEDS_YOU_EXTERNAL_CAP; seed Monday items are not demoted */
+  origin?: "seed" | "github" | "slack";
   githubEventId?: string;
   githubDedupeKey?: string;
+  slackEventId?: string;
+  slackDedupeKey?: string;
 }
 
 export interface Finding {

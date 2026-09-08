@@ -1,5 +1,8 @@
 {
-  "repo": "acme/nightingale",
-  "pr": 1847,
-  "workstreamId": "ws-cred"
+  "repo": "richardhorvath11/battle-buddy",
+  "pr": 32,
+  "workstreamId": "ws-cred",
+  "slackPrChannelId": "C0BVCSA4T2P",
+  "slackPrChannelName": "#control-e2e",
+  "teams": []
 }

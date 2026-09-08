@@ -11,7 +11,7 @@ import type {
   SeedData,
   Workstream,
 } from "./types";
-import { GITHUB_NEEDS_YOU_CAP } from "./github-constants";
+import { NEEDS_YOU_EXTERNAL_CAP } from "./github-constants";
 
 const initial = seed as SeedData;
 
@@ -34,6 +34,8 @@ interface ControlState {
   usedDelegationIds: string[];
   /** Event ids already merged from GitHub inbox into this store */
   appliedGithubEventIds: string[];
+  /** Event ids already merged from Slack inbox into this store */
+  appliedSlackEventIds: string[];
   selectedReviewId: string | null;
   confirmModal: null | {
     title: string;
@@ -86,7 +88,33 @@ interface ControlState {
       } | null;
     }[]
   ) => void;
+  /** Merge durable Slack inbox effects into Attention + workstreams (idempotent). */
+  applySlackInboxItems: (
+    items: {
+      id: string;
+      applied: boolean;
+      duplicate: boolean;
+      effects: {
+        attention: AttentionItem | null;
+        fyiLine: string | null;
+        workstreamPatch: {
+          id: string;
+          changedEntry: string;
+          phase?: Workstream["phase"];
+          status?: Workstream["status"];
+          next?: string;
+          waitingOn?: string;
+          lastActive?: string;
+        } | null;
+        newWorkstream?: Workstream | null;
+        capped?: boolean;
+      } | null;
+    }[]
+  ) => void;
   syncGithubInbox: () => Promise<void>;
+  syncSlackInbox: () => Promise<void>;
+  /** Poll both external inboxes (GitHub + Slack). */
+  syncExternalInboxes: () => Promise<void>;
 
   delegate: (delegationId: string) => void;
   delegateAttention: (attentionId: string) => void;
@@ -126,6 +154,7 @@ export const useControlStore = create<ControlState>()(
       sources: initial.sources as SeedData["sources"],
       usedDelegationIds: [],
       appliedGithubEventIds: [],
+      appliedSlackEventIds: [],
       selectedReviewId: initial.reviewQueue[0]?.id ?? null,
       confirmModal: null,
       launcherOpen: false,
@@ -259,27 +288,30 @@ export const useControlStore = create<ControlState>()(
           }
         }
 
-        // Client-side safety: demote oldest GitHub Needs-you when over cap 2.
-        const githubNow = attention
+        // Client-side safety: demote oldest external (github|slack) Needs-you over shared cap.
+        // Seed Monday Needs-you are not external and are never demoted here.
+        const externalNow = attention
           .filter(
             (a) =>
-              a.origin === "github" && a.routing === "now" && !a.resolved
+              (a.origin === "github" || a.origin === "slack") &&
+              a.routing === "now" &&
+              !a.resolved
           )
           .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-        if (githubNow.length > GITHUB_NEEDS_YOU_CAP) {
+        if (externalNow.length > NEEDS_YOU_EXTERNAL_CAP) {
           const demoteIds = new Set(
-            githubNow
-              .slice(0, githubNow.length - GITHUB_NEEDS_YOU_CAP)
+            externalNow
+              .slice(0, externalNow.length - NEEDS_YOU_EXTERNAL_CAP)
               .map((a) => a.id)
           );
           attention = attention.map((a) => {
             if (!demoteIds.has(a.id)) return a;
-            const line = `GitHub (capped) · ${a.title}`;
+            const line = `${a.origin === "slack" ? "Slack" : "GitHub"} (capped) · ${a.title}`;
             if (!fyi.includes(line)) fyi = [line, ...fyi];
             return {
               ...a,
               routing: "fyi" as const,
-              why: `${a.why} (older Needs-you demoted — GitHub cap ${GITHUB_NEEDS_YOU_CAP})`,
+              why: `${a.why} (older Needs-you demoted — external cap ${NEEDS_YOU_EXTERNAL_CAP})`,
             };
           });
           changed = true;
@@ -309,6 +341,145 @@ export const useControlStore = create<ControlState>()(
         } catch {
           // offline / no watcher — seed still boots
         }
+      },
+
+      applySlackInboxItems: (items) => {
+        let attention = [...get().attention];
+        let workstreams = [...get().workstreams];
+        let fyi = [...get().fyi];
+        const appliedIds = new Set(get().appliedSlackEventIds);
+        let changed = false;
+
+        for (const item of items) {
+          if (!item.applied || item.duplicate || !item.effects) continue;
+          const effects = item.effects;
+          const already = appliedIds.has(item.id);
+
+          if (effects.newWorkstream && !already) {
+            const nw = effects.newWorkstream as Workstream;
+            if (!workstreams.some((w) => w.id === nw.id)) {
+              workstreams = [...workstreams, nw];
+              changed = true;
+            }
+          }
+
+          if (effects.attention) {
+            const att = { ...effects.attention } as AttentionItem;
+            const existingIdx = attention.findIndex((a) => a.id === att.id);
+            if (existingIdx >= 0) {
+              const prev = attention[existingIdx];
+              if (prev.routing !== att.routing || prev.why !== att.why) {
+                attention = attention.map((a, i) =>
+                  i === existingIdx
+                    ? {
+                        ...a,
+                        routing: att.routing,
+                        why: att.why,
+                        provenance: att.provenance,
+                      }
+                    : a
+                );
+                changed = true;
+              }
+            } else if (!already) {
+              if (att.routing === "now") {
+                attention = [att, ...attention];
+              } else {
+                attention = [...attention, att];
+              }
+              changed = true;
+            }
+          }
+
+          if (!already) {
+            if (effects.fyiLine && !fyi.includes(effects.fyiLine)) {
+              fyi = [effects.fyiLine, ...fyi];
+              changed = true;
+            }
+
+            if (effects.workstreamPatch) {
+              const patch = effects.workstreamPatch;
+              workstreams = workstreams.map((w) => {
+                if (w.id !== patch.id) return w;
+                return {
+                  ...w,
+                  changed: [patch.changedEntry, ...w.changed],
+                  phase: patch.phase ?? w.phase,
+                  status: patch.status ?? w.status,
+                  next: patch.next ?? w.next,
+                  waitingOn: patch.waitingOn ?? w.waitingOn,
+                  lastActive: patch.lastActive ?? w.lastActive,
+                };
+              });
+              changed = true;
+            }
+
+            appliedIds.add(item.id);
+            changed = true;
+          } else if (effects.fyiLine && !fyi.includes(effects.fyiLine)) {
+            fyi = [effects.fyiLine, ...fyi];
+            changed = true;
+          }
+        }
+
+        const externalNow = attention
+          .filter(
+            (a) =>
+              (a.origin === "github" || a.origin === "slack") &&
+              a.routing === "now" &&
+              !a.resolved
+          )
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        if (externalNow.length > NEEDS_YOU_EXTERNAL_CAP) {
+          const demoteIds = new Set(
+            externalNow
+              .slice(0, externalNow.length - NEEDS_YOU_EXTERNAL_CAP)
+              .map((a) => a.id)
+          );
+          attention = attention.map((a) => {
+            if (!demoteIds.has(a.id)) return a;
+            const line = `${a.origin === "slack" ? "Slack" : "GitHub"} (capped) · ${a.title}`;
+            if (!fyi.includes(line)) fyi = [line, ...fyi];
+            return {
+              ...a,
+              routing: "fyi" as const,
+              why: `${a.why} (older Needs-you demoted — external cap ${NEEDS_YOU_EXTERNAL_CAP})`,
+            };
+          });
+          changed = true;
+        }
+
+        if (!changed) return;
+
+        set({
+          attention,
+          workstreams,
+          fyi,
+          appliedSlackEventIds: Array.from(appliedIds),
+        });
+        get().recomputeMode();
+      },
+
+      syncSlackInbox: async () => {
+        try {
+          const res = await fetch("/api/slack/inbox");
+          if (!res.ok) return;
+          const data = (await res.json()) as {
+            items?: Parameters<ControlState["applySlackInboxItems"]>[0];
+          };
+          if (Array.isArray(data.items)) {
+            get().applySlackInboxItems(data.items);
+          }
+        } catch {
+          // offline / no watcher — seed still boots
+        }
+      },
+
+      syncExternalInboxes: async () => {
+        await Promise.all([
+          get().syncGithubInbox(),
+          get().syncSlackInbox(),
+        ]);
       },
 
       recomputeMode: () => {
@@ -963,6 +1134,7 @@ export const useControlStore = create<ControlState>()(
         agents: state.agents,
         usedDelegationIds: state.usedDelegationIds,
         appliedGithubEventIds: state.appliedGithubEventIds,
+        appliedSlackEventIds: state.appliedSlackEventIds,
         fyi: state.fyi,
         selectedReviewId: state.selectedReviewId,
         sources: state.sources,
