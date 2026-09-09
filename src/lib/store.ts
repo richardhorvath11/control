@@ -1662,11 +1662,9 @@ export const useControlStore = create<ControlState>()(
 
         get().resolveAttention("att-priya");
 
-        const remaining = get().reviewQueue.filter(
-          (r) =>
-            (r.status === "pending" || r.status === "queued") && r.id !== id
-        );
-        set({ selectedReviewId: remaining[0]?.id ?? null });
+        // Keep posted item selected so Review shows approved + permalink
+        // (same outbox ack UX as GitHub / BUG-C5-1).
+        set({ selectedReviewId: id });
         get().recomputeMode();
       },
 
@@ -1923,11 +1921,9 @@ export const useControlStore = create<ControlState>()(
           }
         }
 
-        const remaining = get().reviewQueue.filter(
-          (r) =>
-            (r.status === "pending" || r.status === "queued") && r.id !== id
-        );
-        set({ selectedReviewId: remaining[0]?.id ?? null });
+        // BUG-C5-1: keep this item selected so Review shows approved + comment link
+        // (list filter includes approved/posted). Do not auto-advance away.
+        set({ selectedReviewId: id });
         get().recomputeMode();
       },
 

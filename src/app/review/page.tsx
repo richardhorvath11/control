@@ -4,20 +4,29 @@ import { useEffect } from "react";
 import Link from "next/link";
 import { useControlStore } from "@/lib/store";
 import { ReviewWorkspace } from "@/components/ReviewWorkspace";
+import type { ReviewItem } from "@/lib/types";
+
+/** Pending/queued, plus outbox-posted approved items (Slack/GitHub ack UX). */
+function isVisibleInReview(r: ReviewItem): boolean {
+  if (r.status === "pending" || r.status === "queued") return true;
+  // BUG-C5-1: after outbox ack, status becomes approved — keep visible so
+  // postedReply / postedGithubComment link can render (mirror Slack UX).
+  if (r.status === "approved") {
+    if (r.slackQueueStatus === "posted" || r.githubQueueStatus === "posted") {
+      return true;
+    }
+    if (r.postedReply || r.postedGithubComment?.url) return true;
+  }
+  return false;
+}
 
 export default function ReviewPage() {
   const queue = useControlStore((s) => s.reviewQueue);
   const selectedId = useControlStore((s) => s.selectedReviewId);
   const setSelected = useControlStore((s) => s.setSelectedReview);
-  const open = queue.filter(
-    (r) => r.status === "pending" || r.status === "queued"
-  );
+  const open = queue.filter(isVisibleInReview);
   const selected =
-    queue.find(
-      (r) =>
-        r.id === selectedId &&
-        (r.status === "pending" || r.status === "queued")
-    ) ??
+    queue.find((r) => r.id === selectedId && isVisibleInReview(r)) ??
     open[0] ??
     null;
 
@@ -60,6 +69,15 @@ export default function ReviewPage() {
                     {item.status === "queued" ? (
                       <span className="chip text-[10px] text-review">
                         queued
+                      </span>
+                    ) : null}
+                    {item.status === "approved" &&
+                    (item.githubQueueStatus === "posted" ||
+                      item.slackQueueStatus === "posted" ||
+                      item.postedGithubComment?.url ||
+                      item.postedReply) ? (
+                      <span className="chip text-[10px] text-running">
+                        posted
                       </span>
                     ) : null}
                   </div>
