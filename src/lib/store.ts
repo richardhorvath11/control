@@ -903,7 +903,7 @@ export const useControlStore = create<ControlState>()(
         // Never invent findings (no Demo templated "Surface checks").
         if (live) {
           const applyResult = (result: ControlReviewResultV1) => {
-            // Only real control.review_result.v1 from disk/API — never fabricate.
+            // Only real control.review_result.v1 from job APIs — never fabricate.
             if (result.status === "error") {
               landFailed(
                 result.summary?.trim() || "Agent Failed",
@@ -951,20 +951,27 @@ export const useControlStore = create<ControlState>()(
               if (!stillCurrent()) return;
               try {
                 const poll = await fetch(
-                  `/api/review/result?job_id=${encodeURIComponent(jobId)}`
+                  `/api/review/jobs/${encodeURIComponent(jobId)}`
                 );
                 const pdata = (await poll.json().catch(() => ({}))) as {
                   ok?: boolean;
-                  pending?: boolean;
+                  status?: "pending" | "claimed" | "done" | "failed";
                   error?: string;
-                  result?: ControlReviewResultV1;
+                  result?: ControlReviewResultV1 | null;
                 };
-                if (pdata.ok && pdata.result && !pdata.pending) {
+                if (pdata.status === "done" && pdata.result) {
                   applyResult(pdata.result);
                   return;
                 }
-                if (pdata.ok === false && pdata.error && !pdata.pending) {
-                  // Corrupt/invalid result file — Failed only, no invented findings.
+                if (pdata.status === "failed") {
+                  // POST /fail — Agent Failed; no invented findings.
+                  landFailed(
+                    (pdata.error ?? "").trim() || "Agent Failed",
+                    false
+                  );
+                  return;
+                }
+                if (pdata.ok === false && pdata.error) {
                   landFailed(pdata.error);
                   return;
                 }

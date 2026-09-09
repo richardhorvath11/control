@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * control-review-worker — V0.7 chip 3b Local Pro Claude worker (Gastown path).
+ * control-review-worker — V0.8 opaque HTTP worker (Gastown / Live default).
  *
  * Usage:
  *   ./scripts/control-review-worker --once    # claim one pending job, exit
  *   ./scripts/control-review-worker --watch   # loop until Ctrl-C
+ *
+ * Talks ONLY HTTP to Control (CONTROL_BASE_URL, default http://localhost:3000).
+ * Never reads or writes Control private storage. HTTP claim/result/fail only.
  *
  * Auth (dogfood): same-user `claude` login OR CLAUDE_CODE_OAUTH_TOKEN from
  * `claude setup-token`. Never require Console ANTHROPIC_API_KEY.
@@ -13,7 +16,7 @@
  * Exit: 0 ok · 1 no pending (--once) · 2 retryable · 3 parse · 4 claude missing
  */
 
-import { spawnSync } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -23,19 +26,22 @@ const REVIEW_RESULT_SCHEMA = "control.review_result.v1";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
-const CONTROL_DIR = path.join(ROOT, ".control");
-const JOBS_DIR = path.join(CONTROL_DIR, "review-jobs");
-const IN_PROGRESS_DIR = path.join(JOBS_DIR, "in-progress");
-const RESULTS_DIR = path.join(CONTROL_DIR, "review-results");
 
+const BASE = (process.env.CONTROL_BASE_URL || "http://localhost:3000").replace(
+  /\/+$/,
+  ""
+);
+const WORKER_ID =
+  (process.env.CONTROL_REVIEW_WORKER_ID || "").trim() ||
+  `worker-${process.pid}`;
 const WATCH_INTERVAL_MS = Number(process.env.CONTROL_REVIEW_WORKER_POLL_MS || 2000);
+const HEARTBEAT_MS = Number(process.env.CONTROL_REVIEW_WORKER_HEARTBEAT_MS || 20000);
 
 function usage(code = 0) {
   console.error(
     "Usage: control-review-worker --once|--watch\n" +
-      "  Claims oldest .control/review-jobs/*.json (no .claimed),\n" +
-      "  runs env -u ANTHROPIC_API_KEY claude -p (no --bare),\n" +
-      "  writes .control/review-results/{job_id}.json\n" +
+      "  POST /api/review/jobs/claim → claude -p → POST result|fail\n" +
+      "  CONTROL_BASE_URL default http://localhost:3000\n" +
       "  Auth: claude login OR CLAUDE_CODE_OAUTH_TOKEN — no API key required."
   );
   process.exit(code);
@@ -58,16 +64,6 @@ function parseArgs(argv) {
     usage(3);
   }
   return { once, watch };
-}
-
-function ensureDirs() {
-  fs.mkdirSync(JOBS_DIR, { recursive: true });
-  fs.mkdirSync(IN_PROGRESS_DIR, { recursive: true });
-  fs.mkdirSync(RESULTS_DIR, { recursive: true });
-}
-
-function safeJobId(jobId) {
-  return String(jobId).replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 function normalizeRepo(repo) {
@@ -138,24 +134,6 @@ function validateResult(raw) {
   return { ok: true, result: raw };
 }
 
-function writeResult(jobId, result) {
-  ensureDirs();
-  const out = path.join(RESULTS_DIR, `${safeJobId(jobId)}.json`);
-  fs.writeFileSync(out, JSON.stringify(result, null, 2), "utf8");
-  return out;
-}
-
-function errorResult(jobId, summary) {
-  return {
-    schema: REVIEW_RESULT_SCHEMA,
-    job_id: jobId,
-    status: "error",
-    summary,
-    findings: [],
-    scope: { notes: "Local Pro Claude worker failure." },
-  };
-}
-
 function which(cmd) {
   const r = spawnSync("which", [cmd], { encoding: "utf8" });
   return r.status === 0 ? r.stdout.trim() : "";
@@ -193,205 +171,229 @@ function extractJsonObject(text) {
   return null;
 }
 
-function listPendingJobs() {
-  ensureDirs();
-  let names;
-  try {
-    names = fs.readdirSync(JOBS_DIR);
-  } catch {
-    return [];
-  }
-  const pending = [];
-  for (const name of names) {
-    if (!name.endsWith(".json")) continue;
-    if (name.endsWith(".result.json")) continue;
-    if (name.endsWith(".claimed")) continue;
-    const base = name.slice(0, -".json".length);
-    const jobPath = path.join(JOBS_DIR, name);
-    const claimPath = path.join(JOBS_DIR, `${base}.claimed`);
-    const inProg = path.join(IN_PROGRESS_DIR, name);
-    if (fs.existsSync(claimPath) || fs.existsSync(inProg)) continue;
-    // Skip if result already exists (chip 3b dir or legacy colocated .result.json)
-    const resultPath = path.join(RESULTS_DIR, `${base}.json`);
-    const legacyResult = path.join(JOBS_DIR, `${base}.result.json`);
-    if (fs.existsSync(resultPath) || fs.existsSync(legacyResult)) continue;
-    let st;
-    try {
-      st = fs.statSync(jobPath);
-    } catch {
-      continue;
-    }
-    if (!st.isFile()) continue;
-    pending.push({ name, jobPath, claimPath, mtimeMs: st.mtimeMs, base });
-  }
-  pending.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
-  return pending;
+async function api(method, pathname, body) {
+  const url = `${BASE}${pathname}`;
+  const res = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return res;
 }
 
-function claimJob(entry) {
-  // Sidecar .claimed + copy/move into in-progress/
-  const claimPayload = {
-    claimed_at: new Date().toISOString(),
-    pid: process.pid,
-    host: process.env.HOSTNAME || "local",
+async function claimJob() {
+  const res = await api("POST", "/api/review/jobs/claim", {
+    worker_id: WORKER_ID,
+  });
+  if (res.status === 204) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`claim HTTP ${res.status} ${text}`.trim());
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!data || !data.job) return null;
+  return data.job;
+}
+
+async function postResult(jobId, result) {
+  const res = await api("POST", `/api/review/jobs/${encodeURIComponent(jobId)}/result`, {
+    ...result,
+    job_id: jobId,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`result HTTP ${res.status} ${text}`.trim());
+  }
+}
+
+async function postFail(jobId, error) {
+  const res = await api("POST", `/api/review/jobs/${encodeURIComponent(jobId)}/fail`, {
+    error,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`fail HTTP ${res.status} ${text}`.trim());
+  }
+}
+
+function heartbeatLoop(jobId) {
+  const tick = () => {
+    api("POST", `/api/review/jobs/${encodeURIComponent(jobId)}/heartbeat`, {
+      worker_id: WORKER_ID,
+    }).catch(() => {});
   };
-  try {
-    fs.writeFileSync(entry.claimPath, JSON.stringify(claimPayload, null, 2), {
-      flag: "wx",
-    });
-  } catch (e) {
-    if (e && e.code === "EEXIST") return null;
-    // race: another worker
-    return null;
-  }
-  try {
-    const dest = path.join(IN_PROGRESS_DIR, entry.name);
-    fs.copyFileSync(entry.jobPath, dest);
-  } catch {
-    /* best-effort in-progress copy */
-  }
-  return entry;
+  const id = setInterval(tick, Math.max(5000, HEARTBEAT_MS));
+  return () => clearInterval(id);
 }
 
-function buildGluePrompt(job, jobPath) {
+function buildGluePrompt(job) {
   const repo = normalizeRepo(job.repo);
   const locator = `${repo}#${job.pr}`;
   return [
     "You are a thin PR review invoke glue for Control (not a product skill/plugin).",
-    "Read the job JSON below (and optional job file path) and reply with ONLY one JSON object matching schema control.review_result.v1:",
+    "Read the job JSON below and reply with ONLY one JSON object matching schema control.review_result.v1:",
     '{ "schema":"control.review_result.v1", "job_id", "status":"ok"|"error", "summary", "findings":[{"title","body","evidence":[]}], "scope":{"notes":"…"} }',
     "Findings are analysis claims with evidence — not approval. Keep findings short.",
     `Target: ${locator}`,
-    `Job file path: ${jobPath}`,
     "Job JSON:",
     JSON.stringify(job),
   ].join("\n");
 }
 
-function runClaude(job, jobPath) {
+function runClaudeOnce(job) {
   const claudeBin = process.env.CONTROL_REVIEW_WORKER_CLAUDE || "claude";
   if (!claudeAvailable(claudeBin)) {
-    return { missing: true };
+    return Promise.resolve({ missing: true });
   }
 
-  const glue = buildGluePrompt(job, jobPath);
-
-  // Critical: unset ANTHROPIC_API_KEY so Pro / setup-token auth is used (no --bare).
+  const glue = buildGluePrompt(job);
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
 
-  function once() {
-    // Prefer env -u when available (POSIX); also delete from env for spawn.
+  return new Promise((resolve) => {
     const useEnvU = process.platform !== "win32";
-    const args = useEnvU
-      ? ["-u", "ANTHROPIC_API_KEY", claudeBin, "-p", glue]
-      : [claudeBin, "-p", glue];
     const cmd = useEnvU ? "env" : claudeBin;
-    const spawnArgs = useEnvU ? args : ["-p", glue];
-    const r = spawnSync(cmd, spawnArgs, {
-      encoding: "utf8",
-      maxBuffer: 8 * 1024 * 1024,
-      timeout: 300_000,
+    const spawnArgs = useEnvU
+      ? ["-u", "ANTHROPIC_API_KEY", claudeBin, "-p", glue]
+      : ["-p", glue];
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(cmd, spawnArgs, {
       env,
       cwd: ROOT,
     });
-    if (r.error && r.error.code === "ENOENT") {
-      return { missing: true };
-    }
-    const parsed = extractJsonObject(r.stdout || "");
-    if (!parsed) {
-      return {
-        ok: false,
-        stdout: r.stdout,
-        stderr: r.stderr,
-        status: r.status,
-      };
-    }
-    const v = validateResult(parsed);
-    if (!v.ok) return { ok: false, error: v.error, raw: parsed };
-    v.result.job_id = job.job_id;
-    return { ok: true, result: v.result };
-  }
+    const killer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+    }, 300_000);
+    child.stdout?.on("data", (d) => {
+      stdout += d.toString();
+      if (stdout.length > 8 * 1024 * 1024) {
+        stdout = stdout.slice(-8 * 1024 * 1024);
+      }
+    });
+    child.stderr?.on("data", (d) => {
+      stderr += d.toString();
+    });
+    child.on("error", (e) => {
+      clearTimeout(killer);
+      if (e && e.code === "ENOENT") resolve({ missing: true });
+      else resolve({ ok: false, error: e.message, stdout, stderr });
+    });
+    child.on("close", (status) => {
+      clearTimeout(killer);
+      const parsed = extractJsonObject(stdout);
+      if (!parsed) {
+        resolve({ ok: false, stdout, stderr, status });
+        return;
+      }
+      const v = validateResult(parsed);
+      if (!v.ok) {
+        resolve({ ok: false, error: v.error, raw: parsed });
+        return;
+      }
+      v.result.job_id = job.job_id;
+      resolve({ ok: true, result: v.result });
+    });
+  });
+}
 
-  let attempt = once();
+async function runClaude(job) {
+  let attempt = await runClaudeOnce(job);
   if (attempt.missing) return attempt;
   if (!attempt.ok) {
     console.error("claude parse fail; retrying once…", attempt.error || "");
-    attempt = once();
+    attempt = await runClaudeOnce(job);
   }
   return attempt;
 }
 
-function processOne() {
-  ensureDirs();
-  const pending = listPendingJobs();
-  if (pending.length === 0) return { empty: true };
-
-  const claimed = claimJob(pending[0]);
-  if (!claimed) return { empty: true }; // lost race
-
-  let raw;
+async function processOne() {
+  let rawJob;
   try {
-    raw = JSON.parse(fs.readFileSync(claimed.jobPath, "utf8"));
+    rawJob = await claimJob();
   } catch (e) {
-    const jobId = claimed.base;
-    const out = writeResult(
-      jobId,
-      errorResult(jobId, `Agent Failed — bad job JSON: ${e instanceof Error ? e.message : e}`)
-    );
-    console.error("bad job JSON →", out);
-    return { exitCode: 3 };
+    console.error("claim failed:", e instanceof Error ? e.message : e);
+    return { exitCode: 2 };
   }
+  if (!rawJob) return { empty: true };
 
-  const v = validateJob(raw);
+  const v = validateJob(rawJob);
   if (!v.ok) {
-    const jobId = typeof raw?.job_id === "string" ? raw.job_id : claimed.base;
-    writeResult(jobId, errorResult(jobId, `Agent Failed — ${v.error}`));
+    const jobId =
+      typeof rawJob?.job_id === "string" && rawJob.job_id.trim()
+        ? rawJob.job_id.trim()
+        : "";
+    if (jobId) {
+      try {
+        await postFail(jobId, `Agent Failed — ${v.error}`);
+      } catch (e) {
+        console.error("fail POST failed:", e instanceof Error ? e.message : e);
+        return { exitCode: 2 };
+      }
+    }
     console.error(v.error);
     return { exitCode: 3 };
   }
   const job = v.job;
   console.log(`claimed ${job.job_id} · ${normalizeRepo(job.repo)}#${job.pr}`);
 
-  const run = runClaude(job, claimed.jobPath);
+  const stopBeat = heartbeatLoop(job.job_id);
+  let run;
+  try {
+    run = await runClaude(job);
+  } finally {
+    stopBeat();
+  }
+
   if (run.missing) {
-    const out = writeResult(
-      job.job_id,
-      errorResult(job.job_id, "Agent Failed — claude CLI not found on PATH")
-    );
-    console.error("claude missing →", out);
+    try {
+      await postFail(job.job_id, "Agent Failed — claude CLI not found on PATH");
+    } catch (e) {
+      console.error("fail POST failed:", e instanceof Error ? e.message : e);
+      return { exitCode: 2 };
+    }
+    console.error("claude missing");
     return { exitCode: 4 };
   }
   if (!run.ok) {
-    const out = writeResult(
-      job.job_id,
-      errorResult(
+    try {
+      await postFail(
         job.job_id,
         `Agent Failed — could not parse claude output (${run.error || "invalid JSON"})`
-      )
-    );
-    console.error("parse fail →", out);
+      );
+    } catch (e) {
+      console.error("fail POST failed:", e instanceof Error ? e.message : e);
+      return { exitCode: 2 };
+    }
+    console.error("parse fail");
     return { exitCode: 3 };
   }
 
-  const out = writeResult(job.job_id, run.result);
+  try {
+    await postResult(job.job_id, run.result);
+  } catch (e) {
+    console.error("result POST failed:", e instanceof Error ? e.message : e);
+    return { exitCode: 2 };
+  }
   console.log(
-    `wrote ${out} status=${run.result.status} findings=${run.result.findings?.length ?? 0}`
+    `posted result ${job.job_id} status=${run.result.status} findings=${run.result.findings?.length ?? 0}`
   );
   return { exitCode: run.result.status === "ok" ? 0 : 0 };
 }
 
 function sleep(ms) {
-  const sec = Math.max(0.2, ms / 1000);
-  spawnSync("sleep", [String(sec)], { stdio: "ignore" });
+  return new Promise((r) => setTimeout(r, Math.max(200, ms)));
 }
 
-function main() {
+async function main() {
   const { once, watch } = parseArgs(process.argv.slice(2));
-  ensureDirs();
 
   if (once) {
-    const r = processOne();
+    const r = await processOne();
     if (r.empty) {
       console.log("no pending review jobs");
       process.exit(1);
@@ -400,27 +402,27 @@ function main() {
   }
 
   console.log(
-    `control-review-worker watching ${JOBS_DIR} (poll ${WATCH_INTERVAL_MS}ms). Ctrl-C to stop.`
+    `control-review-worker watching ${BASE}/api/review/jobs (poll ${WATCH_INTERVAL_MS}ms). Ctrl-C to stop.`
   );
   console.log(
     "Auth: claude login or CLAUDE_CODE_OAUTH_TOKEN — ANTHROPIC_API_KEY is unset for runs."
   );
 
-  // SIGINT handled by default (exit)
   for (;;) {
-    const r = processOne();
+    const r = await processOne();
     if (r.empty) {
-      sleep(WATCH_INTERVAL_MS);
+      await sleep(WATCH_INTERVAL_MS);
       continue;
     }
     if (r.exitCode === 4) {
-      // claude missing — keep watching but back off
-      sleep(Math.max(WATCH_INTERVAL_MS, 5000));
+      await sleep(Math.max(WATCH_INTERVAL_MS, 5000));
     } else if (r.exitCode === 2) {
-      sleep(WATCH_INTERVAL_MS);
+      await sleep(WATCH_INTERVAL_MS);
     }
-    // after a job, immediately look for next
   }
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(2);
+});

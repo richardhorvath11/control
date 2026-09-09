@@ -1,6 +1,7 @@
 /**
- * V0.7 chip 3 / 3b — Review runner server I/O (jobs + results under .control/).
- * Live default: worker (enqueue only; local Pro Claude claims jobs).
+ * V0.7 chip 3 / 3b + V0.8 chip 1 — Review runner server I/O.
+ * `.control/` is private to the Next server. Workers talk HTTP only (review-jobs.ts).
+ * Live default: worker enqueue; local Pro Claude claims via API.
  * Operators may opt into command / claude-cli (server-spawn) / fake (test) / cursor-cloud.
  * No in-product skill pack or prompt library.
  *
@@ -44,7 +45,7 @@ export const REVIEW_JOBS_IN_PROGRESS_DIR = path.join(
 );
 export const REVIEW_RESULTS_DIR = path.join(CONTROL_DIR, "review-results");
 
-function safeJobId(jobId: string): string {
+export function safeJobId(jobId: string): string {
   return jobId.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
@@ -52,8 +53,19 @@ export function reviewJobPath(jobId: string): string {
   return path.join(REVIEW_JOBS_DIR, `${safeJobId(jobId)}.json`);
 }
 
+/** Legacy worker sidecar — retired in V0.8 (workers must not write this). */
 export function reviewJobClaimPath(jobId: string): string {
   return path.join(REVIEW_JOBS_DIR, `${safeJobId(jobId)}.claimed`);
+}
+
+/** Server-internal claim lease (opaque). */
+export function reviewJobClaimStatePath(jobId: string): string {
+  return path.join(REVIEW_JOBS_DIR, `${safeJobId(jobId)}.claim.json`);
+}
+
+/** Server-internal fail marker (opaque). */
+export function reviewJobFailPath(jobId: string): string {
+  return path.join(REVIEW_JOBS_DIR, `${safeJobId(jobId)}.failed.json`);
 }
 
 /** Chip 3b: results live under .control/review-results/{job_id}.json */

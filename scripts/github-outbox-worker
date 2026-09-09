@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # github-outbox-worker — drain Control GitHub comment outbox via local `gh`.
 #
-# Control holds NO GITHUB_TOKEN / PAT. This runs on the operator machine where
-# `gh` is already authenticated and posts a **comment-only** PR conversation
-# comment (issues API) — never APPROVE / REQUEST_CHANGES / merge.
+# HTTP only: GET/POST /api/github/outbox (claim, list, ack, fail). Never open
+# any Control storage directory. Control holds NO GITHUB_TOKEN / PAT.
+# This runs on the operator machine where `gh` is already authenticated and
+# posts a **comment-only** PR conversation comment (issues API) — never
+# APPROVE / REQUEST_CHANGES / merge.
 #
 # Usage:
 #   ./scripts/github-outbox-worker            # process pending once
@@ -119,14 +121,35 @@ print(json.dumps(out))
   echo "acked $id $(python3 -c 'import json,sys; print(json.load(sys.stdin).get("comment_url",""))' <<<"$ack_json")"
 }
 
-drain_once() {
-  local list
-  if ! list="$(curl -sS "${OUTBOX_URL}?status=pending")"; then
-    echo "failed to list outbox at ${OUTBOX_URL}" >&2
-    return 1
-  fi
-
+item_to_bodyfile() {
   python3 -c '
+import json,sys,os,tempfile
+data=json.load(sys.stdin)
+it=data.get("item") or {}
+if it.get("status") and it.get("status")!="pending":
+  sys.exit(0)
+id_=it.get("id") or ""
+repo=it.get("repo") or ""
+pr=it.get("pr")
+body=it.get("body") or ""
+if not id_ or not repo or not pr:
+  sys.exit(0)
+fd, path = tempfile.mkstemp(prefix="gh-outbox-", suffix=".md")
+os.write(fd, body.encode("utf-8"))
+os.close(fd)
+print(f"{id_}\t{repo}\t{pr}\t{path}")
+' < "$1"
+}
+
+drain_once() {
+  # Dry-run: GET pending (no claim) so we do not consume the lease.
+  if [[ "$DRY_RUN" == "1" ]]; then
+    local list
+    if ! list="$(curl -sS "${OUTBOX_URL}?status=pending")"; then
+      echo "failed to list outbox at ${OUTBOX_URL}" >&2
+      return 1
+    fi
+    python3 -c '
 import json,sys,os,tempfile
 data=json.loads(sys.argv[1])
 items=data.get("items") or []
@@ -144,6 +167,37 @@ for it in items:
   os.close(fd)
   print(f"{id_}\t{repo}\t{pr}\t{path}")
 ' "$list" | while IFS=$'\t' read -r id repo pr body_file; do
+      [[ -n "$id" ]] || continue
+      echo "posting $id → ${repo}#${pr}"
+      post_one "$id" "$repo" "$pr" "$body_file" || true
+      rm -f "$body_file"
+    done
+    return 0
+  fi
+
+  while true; do
+    local tmp code
+    tmp="$(mktemp)"
+    code="$(curl -sS -o "$tmp" -w "%{http_code}" -X POST "${OUTBOX_URL}/claim"       -H "Content-Type: application/json" -d "{}")" || {
+      echo "failed to claim outbox at ${OUTBOX_URL}/claim" >&2
+      rm -f "$tmp"
+      return 1
+    }
+    if [[ "$code" == "204" ]]; then
+      rm -f "$tmp"
+      return 0
+    fi
+    if [[ "$code" != "200" ]]; then
+      echo "claim failed HTTP ${code} $(cat "$tmp")" >&2
+      rm -f "$tmp"
+      return 1
+    fi
+    local row
+    row="$(item_to_bodyfile "$tmp")"
+    rm -f "$tmp"
+    [[ -n "$row" ]] || continue
+    local id repo pr body_file
+    IFS=$'\t' read -r id repo pr body_file <<<"$row"
     [[ -n "$id" ]] || continue
     echo "posting $id → ${repo}#${pr}"
     post_one "$id" "$repo" "$pr" "$body_file" || true

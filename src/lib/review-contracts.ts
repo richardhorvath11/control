@@ -2,7 +2,7 @@
  * Client-safe review job/result contracts + mappers.
  * No Node fs / path / child_process — safe for Zustand store and client bundles.
  * Server I/O + enqueue/spawn live in review-runner.ts / invoke-review-runner.ts.
- * Live default backend is worker (local Pro Claude) — not fake.
+ * Live default backend is worker (local Pro Claude via HTTP claim/result) — not fake.
  */
 
 import { normalizeRepo } from "./coalesce-review-ask";
@@ -389,7 +389,7 @@ export type LiveReviewRunDecision =
 
 /**
  * Interpret POST /api/review/run for the Live client kick path.
- * Live default backend is worker: successful enqueue (job on disk, no sync result)
+ * Live default backend is worker: successful enqueue (job id, no sync result)
  * must enter wait/poll — never fail-fast runner copy, never Demo sim findings.
  */
 export function interpretLiveReviewRunResponse(

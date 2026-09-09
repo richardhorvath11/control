@@ -1,6 +1,8 @@
-# Control — V0.7 (chip 5: GitHub comment outbox)
+# Control — V0.8 (chip 1: Opaque worker APIs)
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
+
+**`.control/` is private to the Next server.** Agents and worker scripts must not read or write storage JSON (no `review-results/`, no `.claimed`, no outbox dir scans). Workers talk **HTTP only** (`CONTROL_BASE_URL`, default `http://localhost:3000`).
 
 ## Run
 
@@ -19,7 +21,7 @@ npm start       # serve production build
 
 ## Slack E2E (outbox -> Slack MCP)
 
-Approve on **Draft Slack reply to Priya** (`rev-slack`) does **not** call Slack with a bot/user token. Confirm writes a durable outbox record under `.control/outbox/` (gitignored). Grok (or any MCP driver) reads the outbox, posts a thread reply via Slack MCP (`slack_send_message`), then acks the item. No Slack app / `SLACK_BOT_TOKEN` required.
+Approve on **Draft Slack reply to Priya** (`rev-slack`) does **not** call Slack with a bot/user token. Confirm `POST /api/slack/outbox`. The MCP poster uses **HTTP only** (list/claim → `slack_send_message` → ack). Never open Control storage dirs. No Slack app / `SLACK_BOT_TOKEN` required.
 
 ### Defaults (hardcoded; env can override channel/thread only)
 
@@ -29,7 +31,7 @@ Approve on **Draft Slack reply to Priya** (`rev-slack`) does **not** call Slack 
 | Channel | `#control-e2e` · `C0BVCSA4T2P` |
 | Parent `thread_ts` | `1788808933.776429` |
 | Fixture link | https://connect-8w75152.slack.com/archives/C0BVCSA4T2P/p1788808933776429 |
-| Outbox dir | `.control/outbox/*.json` |
+| Poster | HTTP `/api/slack/outbox` only — never scan storage dirs |
 
 Optional env overrides (no tokens): `SLACK_E2E_CHANNEL_ID`, `SLACK_E2E_THREAD_TS`. See `.env.local.example`.
 
@@ -39,14 +41,14 @@ Optional env overrides (no tokens): `SLACK_E2E_CHANNEL_ID`, `SLACK_E2E_THREAD_TS
 2. Click **Approve…** — confirm modal shows the exact draft text.
 3. **Cancel / Reject** — no outbox write; item stays pending (or rejected).
 4. **Post** — client `POST /api/slack/outbox` with the draft. On success, Review shows **Queued for Slack (awaiting MCP poster)** (`status: queued`). Fail closed: outbox write error keeps the modal open and Review pending.
-5. **Grok / MCP driver** — `GET /api/slack/outbox` (pending) -> `slack_send_message` thread reply -> `POST /api/slack/outbox/:id/ack` with `{ reply_ts?, permalink? }`.
+5. **MCP poster (API-only)** — `GET /api/slack/outbox?status=pending` (or `POST /api/slack/outbox/claim`) → `slack_send_message` thread reply → `POST /api/slack/outbox/:id/ack` with `{ reply_ts?, permalink? }`. Never open storage dirs.
 6. Client polls until ack -> marks Review **approved**, appends the reply to the mocked Slack UI, stores permalink. On `POST .../fail`, Review returns to pending.
 
 Legacy `POST /api/slack/post` is soft-disabled (HTTP 410).
 
 ### Outbox API contract (Inbox Triage / MCP driver)
 
-**Outbox record** (`.control/outbox/<id>.json`):
+**Outbox record** (API body; server storage is private):
 
 ```json
 {
@@ -66,20 +68,33 @@ Legacy `POST /api/slack/post` is soft-disabled (HTTP 410).
 | `GET` | `/api/slack/outbox` | — (`?status=pending|posted|failed|all`, default `pending`) | `{ ok, items: SlackOutboxItem[] }` |
 | `GET` | `/api/slack/outbox/:id` | — | `{ ok, item }` or 404 |
 | `POST` | `/api/slack/outbox` | `{ text, reviewItemId, channelId?, threadTs?, provenance? }` | `201 { ok, item }` |
+| `POST` | `/api/slack/outbox/claim` | `{ worker_id? }` | `200 { ok, item }` or `204` |
 | `POST` | `/api/slack/outbox/:id/ack` | `{ reply_ts?, permalink? }` | `{ ok, item }` with `status: "posted"` |
 | `POST` | `/api/slack/outbox/:id/fail` | `{ error? }` | `{ ok, item }` with `status: "failed"` |
 
 No secrets in git. Credentials (if any) live only with the Slack MCP host, not in Control.
 
+Slack MCP poster (API-only — never open storage dirs):
+
+```bash
+# optional claim (prevents double-send); or GET /api/slack/outbox?status=pending
+curl -sS -X POST http://localhost:3000/api/slack/outbox/claim \
+  -H 'Content-Type: application/json' -d '{}'
+# post via Slack MCP (slack_send_message) using item.channel_id / thread_ts / text
+curl -sS -X POST http://localhost:3000/api/slack/outbox/$ID/ack \
+  -H 'Content-Type: application/json' -d '{"reply_ts":"…","permalink":"…"}'
+```
+
+
 ## GitHub comment outbox (V0.7 chip 5)
 
-Mirror of the Slack outbox for **PR comments**. From a Live **pr_review** item: **Draft comment** -> edit -> **Post comment...** confirm modal (exact body) -> durable `.control/github-outbox/{id}.json` -> local operator poster posts a **comment-only** PR conversation comment -> ack. Control holds **no** GitHub credentials. Slack outbox path (`.control/outbox/`) is unchanged.
+Mirror of the Slack outbox for **PR comments**. From a Live **pr_review** item: **Draft comment** -> edit -> **Post comment...** confirm modal (exact body) -> `POST /api/github/outbox` -> local operator poster (`./scripts/github-outbox-worker`) posts a **comment-only** PR conversation comment via `gh` -> ack. Control holds **no** GitHub credentials. Workers never scan storage dirs.
 
 v1 is **comment-only**: the worker posts an issue comment on the PR (operator `gh` CLI). It does **not** submit review-approve events or merge.
 
 ### Outbox record
 
-`.control/github-outbox/<id>.json` (gitignored under `.control/`):
+API body (server storage is private):
 
 ```json
 {
@@ -100,6 +115,7 @@ After ack: `status: "posted"` plus `comment_url` / `comment_id`. After fail: `st
 | `GET` | `/api/github/outbox` | -- (`?status=pending|posted|failed|all`, default `pending`) | `{ ok, items }` |
 | `GET` | `/api/github/outbox/:id` | -- | `{ ok, item }` or 404 |
 | `POST` | `/api/github/outbox` | `{ body, repo, pr, reviewItemId }` | `201 { ok, item }` |
+| `POST` | `/api/github/outbox/claim` | `{ worker_id? }` | `200 { ok, item }` or `204` |
 | `POST` | `/api/github/outbox/:id/ack` | `{ comment_url?, comment_id? }` | `{ ok, item }` with `status: "posted"` |
 | `POST` | `/api/github/outbox/:id/fail` | `{ error? }` | `{ ok, item }` with `status: "failed"` |
 
@@ -311,24 +327,40 @@ npx tsx scripts/smoke-auto-kick-review.ts
 
 ### Review runner invoke hook (V0.7 chip 3) + Local Pro Claude worker (chip 3b)
 
-**Not a skill.** Chip 3 ships a configurable invoke wrapper; chip 3b makes the **Live dogfood default** a local Gastown worker on the operator machine (Claude Pro), not server-spawned Claude or Console API keys. Control writes `control.review_job.v1`, the local worker runs `claude -p` (no `--bare`, `ANTHROPIC_API_KEY` unset), writes `control.review_result.v1`, and Control imports into Review (Analysis-not-truth). **Do not** ship a pr-review skill, plugin, or prompt library in-product.
+**Not a skill.** Chip 3 ships a configurable invoke wrapper; chip 3b made the **Live dogfood default** a local Gastown worker; V0.8 chip 1 makes that worker **HTTP-only**. Control enqueues `control.review_job.v1`, the local worker runs `claude -p` (no `--bare`, `ANTHROPIC_API_KEY` unset), posts `control.review_result.v1`, and Control imports into Review (Analysis-not-truth). **Do not** ship a pr-review skill, plugin, or prompt library in-product.
 
 #### Default Live dogfood path (worker)
 
-1. Auto-kick / Delegate → `POST /api/review/run` writes `.control/review-jobs/{job_id}.json` and sets Agent **Running** with detail **“Waiting for local worker (claude Pro).”** No Review findings until a result appears.
+Workers talk **only HTTP** to Control. Job/result schemas are API bodies (`control.review_job.v1` / `control.review_result.v1`). Do **not** write `review-results/`, `.claimed`, or any `.control/**` JSON from agents.
+
+1. Auto-kick / Delegate → `POST /api/review/run` enqueues a job and sets Agent **Running** with detail **“Waiting for local worker (claude Pro).”** No Review findings until a result is posted.
 2. On the operator machine (Claude Pro logged in):
 
 ```bash
-./scripts/control-review-worker --once    # claim one pending job, exit
-./scripts/control-review-worker --watch   # loop until Ctrl-C
+CONTROL_BASE_URL=http://localhost:3000 ./scripts/control-review-worker --once
+CONTROL_BASE_URL=http://localhost:3000 ./scripts/control-review-worker --watch
 ```
 
-3. Worker claims oldest pending job (sidecar `.claimed` + `in-progress/`), runs `env -u ANTHROPIC_API_KEY claude -p "…"`, writes `.control/review-results/{job_id}.json`.
-4. Control polls `GET /api/review/result?job_id=…` (≈2s; server reads the results dir — client never imports `fs`) → same import path → Review + Agent Complete. No toast. No invented findings.
+(`CONTROL_BASE_URL` defaults to `http://localhost:3000`.)
+
+3. Worker `POST /api/review/jobs/claim` (optional `{ worker_id }`) → `200 { ok, job }` or `204`. Runs `env -u ANTHROPIC_API_KEY claude -p "…"`. Then `POST /api/review/jobs/:id/result` (`control.review_result.v1`) or `POST /api/review/jobs/:id/fail` `{ error }` (Agent Failed; no invented findings). Heartbeat: `POST /api/review/jobs/:id/heartbeat`.
+4. UI polls `GET /api/review/jobs/:id` (≈2s) → same import path → Review + Agent Complete. No toast. No invented findings.
+
+```bash
+curl -sS -X POST http://localhost:3000/api/review/jobs/claim \
+  -H 'Content-Type: application/json' -d '{"worker_id":"local-1"}'
+curl -sS http://localhost:3000/api/review/jobs/$JOB_ID
+curl -sS -X POST http://localhost:3000/api/review/jobs/$JOB_ID/result \
+  -H 'Content-Type: application/json' -d @- <<'JSON'
+{"schema":"control.review_result.v1","job_id":"rj-…","status":"ok","summary":"…","findings":[{"title":"…","body":"…","evidence":[]}]}
+JSON
+curl -sS -X POST http://localhost:3000/api/review/jobs/$JOB_ID/fail \
+  -H 'Content-Type: application/json' -d '{"error":"claude missing"}'
+```
 
 **Auth (dogfood):** same-user `claude` login **or** `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`. **Never** require a Console `ANTHROPIC_API_KEY` for dogfood. If no worker claims the job within the wait window, Agent **Failed/Blocked** with `Waiting timed out — run ./scripts/control-review-worker` (no invented Review findings).
 
-Worker exit codes: `0` ok · `1` no pending (`--once`) · `2` retryable · `3` parse · `4` claude missing. Failures still write `status: error` results so Control can land Agent Failed.
+Worker exit codes: `0` ok · `1` no pending (`--once`) · `2` retryable · `3` parse · `4` claude missing. Operational failures `POST /fail` (no fake findings).
 
 #### Chip 3 CLI (external / advanced backends)
 
@@ -337,7 +369,7 @@ Worker exit codes: `0` ok · `1` no pending (`--once`) · `2` retryable · `3` p
 # Exit: 0 ok · 2 retryable · 3 bad parse/job · 4 backend missing
 ```
 
-Job → `.control/review-jobs/{job_id}.json` (and/or `--in`):
+Job (API body / `control-review-run --in` for command backends only):
 
 ```json
 {
@@ -353,7 +385,7 @@ Job → `.control/review-jobs/{job_id}.json` (and/or `--in`):
 }
 ```
 
-Result ← `.control/review-results/{job_id}.json` (worker) or `--out` (command / control-review-run):
+Result (API body `POST /api/review/jobs/:id/result`, or `--out` for command / control-review-run):
 
 ```json
 {
@@ -375,7 +407,7 @@ Result ← `.control/review-results/{job_id}.json` (worker) or `--out` (command 
 
 | Backend | Behavior |
 |---------|----------|
-| `worker` | **Live default.** Enqueue job only; do **not** server-spawn claude. Local `./scripts/control-review-worker` claims + runs Pro Claude. |
+| `worker` | **Live default.** Enqueue job only; do **not** server-spawn claude. Local `./scripts/control-review-worker` claims via HTTP + runs Pro Claude. |
 | `command` | Unchanged — spawn operator `--in`/`--out` wrapper via `control-review-run`. |
 | `fake` | Templated fixture findings — **CI/smoke/Demo QA only**. **Live must not default here.** |
 | `claude-cli` | Advanced/opt-in server-spawn via `control-review-run` (prefer **worker** for dogfood). Minimal glue prompt inside the wrapper only. |
@@ -383,9 +415,9 @@ Result ← `.control/review-results/{job_id}.json` (worker) or `--out` (command 
 
 **Live default:** `CONTROL_REVIEW_BACKEND` unset → **`worker`**. Prefer worker for dogfood; use `fake` only for smoke; `claude-cli` is opt-in.
 
-Demo keeps the local sim timer for Monday narrative; Live goes through `POST /api/review/run` (enqueue or sync invoke) + result poll for worker. Manual **Delegate** PR review uses the same `startPrReviewWorker` path as auto-kick (BUG-RR1: client-safe contracts only; enqueue/poll via API).
+Demo keeps the local sim timer for Monday narrative; Live goes through `POST /api/review/run` (enqueue or sync invoke) + `GET /api/review/jobs/:id` poll for worker. Manual **Delegate** PR review uses the same `startPrReviewWorker` path as auto-kick (BUG-RR1: client-safe contracts only; enqueue/poll via API).
 
-Job / claim / result paths live under gitignored `.control/` (`review-jobs/`, `review-jobs/in-progress/`, `review-results/`). No model / GitHub / Slack tokens added to Control. No `ANTHROPIC_API_KEY` required in `.env.example`.
+`.control/` stays private server storage (gitignored). Agents must not write storage JSON. No model / GitHub / Slack tokens added to Control. No `ANTHROPIC_API_KEY` required in `.env.example`.
 
 ```bash
 npx tsx scripts/smoke-review-runner.ts
@@ -434,7 +466,7 @@ Watcher tick or thin helper writes gitignored:
 | Enqueue | `review_job.v1.snapshot_path` preferred when the file exists on disk |
 | UI | Snapshot panel: CI chip+link, head SHA, file list (path+status, cap ~20, **no hunks**) |
 | Empty | Clear CTA to run watcher/script; **findings still render**; no crash |
-| Draft comment | **Enabled (chip 5)** — confirm -> `.control/github-outbox/` -> local gh worker |
+| Draft comment | **Enabled (chip 5)** — confirm -> `POST /api/github/outbox` -> local gh worker |
 | Stay cut | Full IDE / Monaco / patch hunks · merge button · auto-merge · credentials-in-Control |
 
 ```bash
@@ -470,8 +502,8 @@ Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slac
 | GitHub state | `.control/github-watcher-state.json` (gitignored) |
 | PR follows (V0.6 chip 4) | `.control/pr-follows.json` (gitignored; Slack apply upserts) |
 | PR snapshots (V0.7 chip 4) | `.control/pr-snapshots/{owner}-{repo}-{pr}.json` (gitignored; gh/watcher writes) |
-| GitHub comment outbox (V0.7 chip 5) | `.control/github-outbox/*.json` (gitignored; Confirm writes; local gh worker posts) |
-| GitHub outbox worker | `./scripts/github-outbox-worker` (`--once` / `--watch` / `--dry-run`) |
+| GitHub comment outbox (V0.7 chip 5) | HTTP `/api/github/outbox` (Confirm enqueues; local gh worker claims/posts/acks) |
+| GitHub outbox worker | `./scripts/github-outbox-worker` (HTTP claim/list/ack/fail only) |
 | GitHub outbox smoke | `npx tsx scripts/smoke-github-outbox.ts` |
 | Slack cursor state | `.control/slack-watcher-state.json` keyed by `channel_id` → last `ts` |
 | Follow smoke | `npx tsx scripts/smoke-pr-follows.ts` |
@@ -515,7 +547,7 @@ Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, infinite fol
 - No auth, no live Slack ingestion, no database, **no GitHub/Slack tokens in Control**
 - Agent delegation + Live auto-kick PR review via default local Pro Claude **worker** (or `control-review-run` for command/fake/claude-cli); Demo keeps 3–8s sim; completion increments the Review badge only (no toasts)
 - Slack write for the Priya draft only (confirm-gated outbox -> MCP)
-- GitHub PR comment write (confirm-gated `.control/github-outbox/` -> local gh / MCP; comment-only)
+- GitHub PR comment write (confirm-gated `/api/github/outbox` -> local gh / MCP; comment-only)
 
 ## Seeded Monday
 
@@ -538,8 +570,16 @@ Workstreams: Staging credential rotation (human review), Search ranking experime
 | `/source/github/[id]` | Mocked PR + CI + diff |
 | `/source/rfc/[id]` | Mocked RFC section |
 | `/source/calendar/[id]` | Mocked calendar event |
-| `GET/POST /api/slack/outbox` | Durable Slack outbox for MCP poster |
-| `GET/POST /api/github/outbox` | Durable GitHub comment outbox for local gh/MCP poster |
+| `GET/POST /api/slack/outbox` | Durable Slack outbox for MCP poster (HTTP only) |
+| `POST /api/slack/outbox/claim` | Atomic Slack outbox claim (`200` item / `204`) |
+| `GET/POST /api/github/outbox` | Durable GitHub comment outbox for local gh/MCP poster (HTTP only) |
+| `POST /api/github/outbox/claim` | Atomic GitHub outbox claim (`200` item / `204`) |
+| `POST /api/review/run` | Enqueue Live review job (worker default) |
+| `POST /api/review/jobs/claim` | Atomic review job claim (`200 { ok, job }` / `204`) |
+| `GET /api/review/jobs/:id` | Job status pending / claimed / done / failed |
+| `POST /api/review/jobs/:id/heartbeat` | Refresh claim lease |
+| `POST /api/review/jobs/:id/result` | Import `control.review_result.v1` |
+| `POST /api/review/jobs/:id/fail` | Agent Failed; no invented findings |
 | `GET/POST /api/github/inbox` | Durable GitHub inbox (watcher → Control) |
 | `GET/POST /api/slack/inbox` | Durable Slack PR-link inbox (watcher → Control) |
 | `POST /api/demo/reset` | Clear demo persist instruction; optional `clearInboxes=true` (keeps watch.json / pr-follows) |
@@ -561,7 +601,7 @@ Command palette (⌘K) opens the launcher (not chat). Includes **Open Live setup
 4. Start focus — Now quiets; badge may change without interrupting.
 5. Open Review — RFC finding, open RFC + PR mocks, Approve/Reject.
 6. Approve/edit Slack draft with explicit confirm -> outbox queue -> MCP poster -> ack.
-7. On a Live PR Review: Draft comment -> confirm -> github-outbox -> `./scripts/github-outbox-worker` -> ack.
+7. On a Live PR Review: Draft comment -> confirm -> `POST /api/github/outbox` -> `./scripts/github-outbox-worker` -> ack.
 8. Return to Now — checkpoint updated.
 
 ## Explicit cuts

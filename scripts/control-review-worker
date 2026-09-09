@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# control-review-worker — V0.7 chip 3b Local Pro Claude worker (Gastown).
+# control-review-worker — V0.8 opaque HTTP worker (Gastown).
 # See scripts/control-review-worker.mjs and README.
+# CONTROL_BASE_URL default http://localhost:3000. Never touches .control/.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 exec node "$ROOT/scripts/control-review-worker.mjs" "$@"

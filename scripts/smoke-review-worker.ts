@@ -1,9 +1,10 @@
 /**
- * V0.7 chip 3b smoke: local Pro Claude worker claim → result path (stub claude).
+ * V0.8 chip 1 smoke: opaque HTTP claim/result APIs + worker (stub claude).
  * Run: npx tsx scripts/smoke-review-worker.ts
  */
-import { spawnSync } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import fs from "fs";
+import http from "http";
 import os from "os";
 import path from "path";
 import {
@@ -15,13 +16,21 @@ import {
   validateReviewResult,
   writeReviewJob,
   reviewResultPath,
+  reviewJobClaimPath,
   REVIEW_JOBS_DIR,
   REVIEW_RESULTS_DIR,
   ensureReviewJobsDir,
   ensureReviewResultsDir,
   readReviewResultFile,
   newReviewJobId,
+  buildReviewItemFromResult,
 } from "../src/lib/review-runner";
+import {
+  claimNextReviewJob,
+  completeReviewJob,
+  failReviewJob,
+  getReviewJobView,
+} from "../src/lib/review-jobs";
 import { interpretLiveReviewRunResponse } from "../src/lib/review-contracts";
 import { enqueueReviewJob } from "../src/lib/invoke-review-runner";
 import { NEEDS_YOU_EXTERNAL_CAP } from "../src/lib/github-constants";
@@ -100,6 +109,14 @@ assert(
   assert(
     liveBlock.includes("landFailed(WORKER_TIMEOUT_DETAIL, false)"),
     "timeout lands Failed (not Blocked)"
+  );
+  assert(
+    liveBlock.includes("/api/review/jobs/"),
+    "Live poll uses GET /api/review/jobs/:id"
+  );
+  assert(
+    !liveBlock.includes("/api/review/result?job_id"),
+    "Live poll retired GET /api/review/result file path"
   );
   assert(
     liveBlock.includes("WAITING_FOR_LOCAL_WORKER_DETAIL") ||
@@ -314,6 +331,146 @@ assert(
   else delete process.env.CONTROL_REVIEW_BACKEND;
 }
 
+
+{
+  const wsrc = fs.readFileSync(
+    path.join(ROOT, "scripts/control-review-worker.mjs"),
+    "utf8"
+  );
+  assert(!wsrc.includes(".claimed"), "worker source has no .claimed");
+  assert(!/review-results/.test(wsrc), "worker source has no review-results writes");
+  assert(wsrc.includes("/api/review/jobs/claim"), "worker claims via HTTP");
+  assert(wsrc.includes("CONTROL_BASE_URL"), "worker uses CONTROL_BASE_URL");
+  assert(
+    wsrc.includes("/api/review/jobs/") && wsrc.includes("/result"),
+    "worker posts result via HTTP"
+  );
+  assert(wsrc.includes("/fail"), "worker posts fail via HTTP");
+  const gsrc = fs.readFileSync(
+    path.join(ROOT, "scripts/github-outbox-worker"),
+    "utf8"
+  );
+  assert(
+    !gsrc.includes(".control"),
+    "github-outbox-worker does not touch .control storage"
+  );
+  assert(gsrc.includes("/api/github/outbox"), "github-outbox-worker uses HTTP API");
+  assert(gsrc.includes("/claim"), "github-outbox-worker uses claim API");
+}
+
+
+function startJobsHttpServer(): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = http.createServer((req, res) => {
+    void (async () => {
+      const url = new URL(req.url || "/", "http://127.0.0.1");
+      const send = (status: number, body?: unknown) => {
+        if (status === 204) {
+          res.writeHead(204);
+          res.end();
+          return;
+        }
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(body === undefined ? "" : JSON.stringify(body));
+      };
+      const readBody = async (): Promise<Record<string, unknown>> => {
+        const chunks: Buffer[] = [];
+        for await (const c of req) chunks.push(c as Buffer);
+        if (!chunks.length) return {};
+        try {
+          return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<
+            string,
+            unknown
+          >;
+        } catch {
+          return {};
+        }
+      };
+      try {
+        if (req.method === "POST" && url.pathname === "/api/review/jobs/claim") {
+          const body = await readBody();
+          const job = await claimNextReviewJob(
+            typeof body.worker_id === "string" ? body.worker_id : undefined
+          );
+          if (!job) return send(204);
+          return send(200, { ok: true, job });
+        }
+        const m = url.pathname.match(
+          /^\/api\/review\/jobs\/([^/]+)(?:\/(heartbeat|result|fail))?$/
+        );
+        if (!m) return send(404, { error: "not found" });
+        const jobId = decodeURIComponent(m[1]);
+        const action = m[2];
+        if (req.method === "GET" && !action) {
+          const view = await getReviewJobView(jobId);
+          if (!view) return send(404, { error: "Job not found" });
+          return send(200, {
+            ok: true,
+            job: view.job,
+            status: view.status,
+            result: view.result ?? null,
+            error: view.error ?? null,
+          });
+        }
+        if (req.method === "POST" && action === "heartbeat") {
+          await readBody();
+          return send(200, { ok: true });
+        }
+        if (req.method === "POST" && action === "result") {
+          const body = await readBody();
+          const out = await completeReviewJob(jobId, body);
+          if (!out.ok) return send(out.status, { error: out.error });
+          return send(200, { ok: true, result: out.result });
+        }
+        if (req.method === "POST" && action === "fail") {
+          const body = await readBody();
+          const out = await failReviewJob(
+            jobId,
+            typeof body.error === "string" ? body.error : undefined
+          );
+          if (!out.ok) return send(out.status, { error: out.error });
+          return send(200, { ok: true, error: out.error, status: "failed" });
+        }
+        return send(404, { error: "not found" });
+      } catch (err) {
+        send(500, { error: err instanceof Error ? err.message : "server error" });
+      }
+    })();
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () =>
+          new Promise<void>((r) => {
+            server.close(() => r());
+          }),
+      });
+    });
+  });
+}
+
+function spawnOnce(
+  env: NodeJS.ProcessEnv
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(WORKER, ["--once"], {
+      cwd: ROOT,
+      env,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (d) => {
+      stdout += d.toString();
+    });
+    child.stderr?.on("data", (d) => {
+      stderr += d.toString();
+    });
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
 async function main() {
   await ensureReviewJobsDir();
   await ensureReviewResultsDir();
@@ -329,29 +486,18 @@ async function main() {
   if (!enq.ok) {
     process.exit(1);
   }
-  assert(fs.existsSync(enq.jobPath), "job file on disk");
-  assert(
-    enq.jobPath.includes(`${path.sep}review-jobs${path.sep}`),
-    "job under review-jobs"
-  );
-  assert(
-    enq.resultPath.includes(`${path.sep}review-results${path.sep}`),
-    "result path under review-results"
-  );
+  assert(fs.existsSync(enq.jobPath), "job file on disk (server-internal)");
 
-  // Pending: no result yet
-  const pending = await readReviewResultFile(jobId);
-  assert(!pending.ok && pending.pending === true, "result pending before worker");
+  const pendingView = await getReviewJobView(jobId);
+  assert(pendingView?.status === "pending", "job pending before claim");
 
-  // Isolate: park other pending jobs so --once claims *this* smoke job
-  // (leftover Live enqueues from dogfood must not steal the claim).
+  // Isolate: park other pending jobs so claim hits *this* smoke job
   const parked: string[] = [];
   for (const name of fs.readdirSync(REVIEW_JOBS_DIR)) {
     if (!name.endsWith(".json")) continue;
+    if (name.endsWith(".claim.json") || name.endsWith(".failed.json")) continue;
     if (name.startsWith(jobId.replace(/[^a-zA-Z0-9._-]/g, "_"))) continue;
     const full = path.join(REVIEW_JOBS_DIR, name);
-    const claimed = full.replace(/\.json$/, ".claimed");
-    if (fs.existsSync(claimed)) continue;
     const park = full + ".park-smoke";
     try {
       fs.renameSync(full, park);
@@ -370,14 +516,11 @@ async function main() {
     }
   };
 
-  // Stub claude on PATH that emits valid control.review_result.v1
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "control-claude-stub-"));
   const stubClaude = path.join(binDir, "claude");
   fs.writeFileSync(
     stubClaude,
     `#!/usr/bin/env bash
-# ignore args; emit one valid result JSON on stdout
-# (worker passes job via -p prompt; we just need parseable JSON)
 cat <<'JSON'
 {
   "schema": "${REVIEW_RESULT_SCHEMA}",
@@ -396,103 +539,174 @@ JSON
     { mode: 0o755 }
   );
 
-  const env = {
+  const envBase = {
     ...process.env,
     PATH: `${binDir}:${process.env.PATH || ""}`,
     ANTHROPIC_API_KEY: "should-be-unset-by-worker",
   };
+
   try {
-  const r = spawnSync(WORKER, ["--once"], {
-    encoding: "utf8",
-    cwd: ROOT,
-    env,
-  });
-  // Keep other jobs parked until after empty --once and noclaude checks so
-  // leftover Live dogfood enqueues cannot steal claims (flaky exit 0 / wrong job).
-  assert(
-    r.status === 0,
-    `worker --once exit 0 (got ${r.status}) stderr=${r.stderr} stdout=${r.stdout}`
-  );
+    // Concurrent claim: only one winner
+    const [c1, c2] = await Promise.all([
+      claimNextReviewJob("w1"),
+      claimNextReviewJob("w2"),
+    ]);
+    const won = [c1, c2].filter(Boolean);
+    assert(won.length === 1, "two concurrent claims → one job");
+    assert(won[0]?.job_id === jobId, "claimed the smoke job");
+    const emptyClaim = await claimNextReviewJob("w3");
+    assert(emptyClaim === null, "second claim empty (204 shape)");
 
-  const resultFile = reviewResultPath(jobId);
-  assert(fs.existsSync(resultFile), `result file at ${resultFile}`);
-  const raw = JSON.parse(fs.readFileSync(resultFile, "utf8"));
-  const vr = validateReviewResult(raw);
-  assert(vr.ok, "result schema valid");
-  if (vr.ok) {
-    assert(vr.result.status === "ok", "status ok");
-    assert(vr.result.findings.length >= 1, "≥1 finding from worker");
-    assert(vr.result.job_id === jobId, "job_id matches");
-  }
+    const bad = await completeReviewJob(jobId, { schema: "nope" });
+    assert(!bad.ok && bad.status === 400, "invalid result body → 4xx");
+    const still = await getReviewJobView(jobId);
+    assert(still?.status === "claimed", "invalid result does not mark done");
 
-  const claimed = path.join(
-    REVIEW_JOBS_DIR,
-    `${jobId.replace(/[^a-zA-Z0-9._-]/g, "_")}.claimed`
-  );
-  assert(fs.existsSync(claimed), "claim sidecar written");
+    const okRes = {
+      schema: REVIEW_RESULT_SCHEMA,
+      job_id: jobId,
+      status: "ok" as const,
+      summary: "API complete smoke",
+      findings: [
+        {
+          title: "Real worker finding",
+          body: "From control.review_result.v1 via POST result.",
+          evidence: [],
+        },
+      ],
+    };
+    const done = await completeReviewJob(jobId, okRes);
+    assert(done.ok, "valid POST result ok");
+    const viewDone = await getReviewJobView(jobId);
+    assert(viewDone?.status === "done", "job status done");
+    assert(viewDone?.result?.findings.length === 1, "result findings present");
+    const mapped = buildReviewItemFromResult({
+      id: "rev-smoke-api",
+      repo: "richardhorvath11/battle-buddy",
+      pr: 32,
+      agentId: "agent-smoke",
+      result: viewDone!.result!,
+    });
+    assert(mapped.findings.length === 1, "import path maps findings");
+    assert(
+      !/Simulated independent review/i.test(mapped.findings[0]?.body ?? ""),
+      "imported finding is not Demo-sim"
+    );
 
-  const after = await readReviewResultFile(jobId);
-  assert(after.ok === true, "readReviewResultFile finds result");
+    // Fail path: no invented findings
+    const jobFail = `rj-smoke-fail-${Date.now().toString(36)}`;
+    await writeReviewJob({
+      schema: REVIEW_JOB_SCHEMA,
+      job_id: jobFail,
+      repo: "richardhorvath11/battle-buddy",
+      pr: 33,
+      provenance: [],
+    });
+    const claimedFail = await claimNextReviewJob("w-fail");
+    assert(claimedFail?.job_id === jobFail, "claimed fail job");
+    const failed = await failReviewJob(jobFail, "Agent Failed — claude missing");
+    assert(failed.ok, "fail API ok");
+    const failView = await getReviewJobView(jobFail);
+    assert(failView?.status === "failed", "status failed");
+    assert(!failView?.result, "fail has no result/findings");
+    const failFile = await readReviewResultFile(jobFail);
+    assert(
+      !failFile.ok && failFile.pending === true,
+      "fail does not write a result file with findings"
+    );
 
-  // --once with nothing left → exit 1
-  const empty = spawnSync(WORKER, ["--once"], {
-    encoding: "utf8",
-    cwd: ROOT,
-    env,
-  });
-  assert(empty.status === 1, `no pending → exit 1 (got ${empty.status})`);
+    const httpSrv = await startJobsHttpServer();
+    const env = { ...envBase, CONTROL_BASE_URL: httpSrv.url };
 
-  // Missing claude → exit 4 + error result (keep PATH so bash wrapper works)
-  const jobId2 = `rj-smoke-noclaude-${Date.now().toString(36)}`;
-  await writeReviewJob({
-    schema: REVIEW_JOB_SCHEMA,
-    job_id: jobId2,
-    repo: "richardhorvath11/battle-buddy",
-    pr: 99,
-    provenance: [],
-  });
-  const missingClaude = path.join(
-    os.tmpdir(),
-    `control-no-claude-${Date.now()}`,
-    "claude"
-  );
-  const r4 = spawnSync(WORKER, ["--once"], {
-    encoding: "utf8",
-    cwd: ROOT,
-    env: {
+    // Fresh job for worker --once
+    const jobW = `rj-smoke-http-${Date.now().toString(36)}`;
+    await enqueueReviewJob({
+      job_id: jobW,
+      repo: "richardhorvath11/battle-buddy",
+      pr: 32,
+      provenance: [],
+    });
+
+    const r = await spawnOnce(env);
+    assert(
+      r.status === 0,
+      `worker --once exit 0 (got ${r.status}) stderr=${r.stderr} stdout=${r.stdout}`
+    );
+    assert(!fs.existsSync(reviewJobClaimPath(jobW)), "worker did not write .claimed");
+    const after = await getReviewJobView(jobW);
+    assert(after?.status === "done", "worker POST result → done");
+    assert((after?.result?.findings.length ?? 0) >= 1, "≥1 finding from worker");
+
+    const empty = await spawnOnce(env);
+    assert(empty.status === 1, `no pending → exit 1 (got ${empty.status})`);
+
+    // Concurrent --once
+    const jobC = `rj-smoke-conc-${Date.now().toString(36)}`;
+    await enqueueReviewJob({
+      job_id: jobC,
+      repo: "richardhorvath11/battle-buddy",
+      pr: 32,
+      provenance: [],
+    });
+    const [a, b] = await Promise.all([spawnOnce(env), spawnOnce(env)]);
+    const codes = [a.status, b.status].sort();
+    assert(
+      codes[0] === 0 && codes[1] === 1,
+      `two --once → one 0 one 1 (got ${a.status},${b.status})`
+    );
+    assert(!fs.existsSync(reviewJobClaimPath(jobC)), "concurrent workers wrote no .claimed");
+
+    // Missing claude → exit 4 + fail API (no fake findings)
+    const jobId2 = `rj-smoke-noclaude-${Date.now().toString(36)}`;
+    await writeReviewJob({
+      schema: REVIEW_JOB_SCHEMA,
+      job_id: jobId2,
+      repo: "richardhorvath11/battle-buddy",
+      pr: 99,
+      provenance: [],
+    });
+    const missingClaude = path.join(
+      os.tmpdir(),
+      `control-no-claude-${Date.now()}`,
+      "claude"
+    );
+    const r4 = await spawnOnce({
       ...process.env,
+      CONTROL_BASE_URL: httpSrv.url,
       CONTROL_REVIEW_WORKER_CLAUDE: missingClaude,
-    },
-  });
-  assert(r4.status === 4, `claude missing → exit 4 (got ${r4.status}) stderr=${r4.stderr}`);
-  const errRes = await readReviewResultFile(jobId2);
-  assert(errRes.ok === true, "error result written when claude missing");
-  if (errRes.ok) {
-    assert(errRes.result.status === "error", "status error");
-    assert(/claude/i.test(errRes.result.summary), "summary mentions claude");
-  }
+    });
+    assert(
+      r4.status === 4,
+      `claude missing → exit 4 (got ${r4.status}) stderr=${r4.stderr}`
+    );
+    const errView = await getReviewJobView(jobId2);
+    assert(errView?.status === "failed", "claude missing → job failed");
+    assert(!errView?.result, "no invented findings on fail");
 
-  // Cleanup smoke artifacts (best-effort)
-  for (const id of [jobId, jobId2]) {
-    const safe = id.replace(/[^a-zA-Z0-9._-]/g, "_");
-    for (const f of [
-      path.join(REVIEW_JOBS_DIR, `${safe}.json`),
-      path.join(REVIEW_JOBS_DIR, `${safe}.claimed`),
-      path.join(REVIEW_JOBS_DIR, "in-progress", `${safe}.json`),
-      path.join(REVIEW_RESULTS_DIR, `${safe}.json`),
-    ]) {
-      try {
-        fs.unlinkSync(f);
-      } catch {
-        /* ignore */
+    await httpSrv.close();
+
+    for (const id of [jobId, jobFail, jobW, jobC, jobId2]) {
+      const safe = id.replace(/[^a-zA-Z0-9._-]/g, "_");
+      for (const f of [
+        path.join(REVIEW_JOBS_DIR, `${safe}.json`),
+        path.join(REVIEW_JOBS_DIR, `${safe}.claimed`),
+        path.join(REVIEW_JOBS_DIR, `${safe}.claim.json`),
+        path.join(REVIEW_JOBS_DIR, `${safe}.failed.json`),
+        path.join(REVIEW_JOBS_DIR, "in-progress", `${safe}.json`),
+        path.join(REVIEW_RESULTS_DIR, `${safe}.json`),
+      ]) {
+        try {
+          fs.unlinkSync(f);
+        } catch {
+          /* ignore */
+        }
       }
     }
-  }
-  try {
-    fs.rmSync(binDir, { recursive: true, force: true });
-  } catch {
-    /* ignore */
-  }
+    try {
+      fs.rmSync(binDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
   } finally {
     unpark();
   }

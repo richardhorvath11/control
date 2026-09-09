@@ -22,8 +22,8 @@ type Body = {
 
 /**
  * POST /api/review/run — Live review path.
- * Default backend=worker: write control.review_job.v1 only (no server-spawn claude);
- * client polls GET /api/review/result?job_id=… after local worker writes result.
+ * Default backend=worker: enqueue control.review_job.v1 only (no server-spawn claude);
+ * worker claims via POST /api/review/jobs/claim; client polls GET /api/review/jobs/:id.
  * Other backends (command / fake / claude-cli / cursor-cloud): invoke control-review-run.
  */
 export async function POST(req: NextRequest) {
@@ -97,8 +97,6 @@ export async function POST(req: NextRequest) {
       pending: true,
       backend: outcome.backend,
       job: outcome.job,
-      jobPath: outcome.jobPath,
-      resultPath: outcome.resultPath,
       detail: WAITING_FOR_LOCAL_WORKER_DETAIL,
     });
   }
@@ -110,8 +108,6 @@ export async function POST(req: NextRequest) {
     exitCode: outcome.exitCode,
     job: outcome.job,
     result: outcome.result,
-    jobPath: outcome.jobPath,
-    resultPath: outcome.resultPath,
   });
 }
 

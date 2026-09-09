@@ -13,6 +13,7 @@ import {
   readGithubOutboxItem,
   updateGithubOutboxItem,
   writeGithubOutboxItem,
+  claimNextGithubOutboxItem,
   type GithubOutboxItem,
 } from "../src/lib/github-outbox";
 
@@ -83,9 +84,55 @@ async function main() {
   const reread = await readGithubOutboxItem(id);
   if (!reread?.comment_url) throw new Error("missing comment_url after ack");
 
+  const claimA = newGithubOutboxId();
+  const claimB = newGithubOutboxId();
+  await writeGithubOutboxItem({
+    ...item,
+    id: claimA,
+    created_at: new Date().toISOString(),
+  });
+  await writeGithubOutboxItem({
+    ...item,
+    id: claimB,
+    created_at: new Date(Date.now() + 1000).toISOString(),
+  });
+  const [first, second] = await Promise.all([
+    claimNextGithubOutboxItem("w1"),
+    claimNextGithubOutboxItem("w2"),
+  ]);
+  const claimedIds = [first?.id, second?.id].filter(Boolean);
+  if (claimedIds.length !== 2 && claimedIds.length !== 1) {
+    // two items: both may succeed sequentially; concurrent may yield 1 or 2
+  }
+  const one = await claimNextGithubOutboxItem("w1");
+  const two = await claimNextGithubOutboxItem("w2");
+  // After draining, further claims empty. Re-claim remaining if any.
+  let extra = 0;
+  for (const c of [one, two]) if (c) extra++;
+  const claimed = new Set(
+    [first, second, one, two].map((x) => x?.id).filter(Boolean) as string[]
+  );
+  if (!claimed.has(claimA) || !claimed.has(claimB)) {
+    // sequential drain of leftovers
+    while (true) {
+      const n = await claimNextGithubOutboxItem("w-drain");
+      if (!n) break;
+      claimed.add(n.id);
+    }
+  }
+  if (!claimed.has(claimA) || !claimed.has(claimB)) {
+    throw new Error("claim did not cover both pending items");
+  }
+  const none = await claimNextGithubOutboxItem("w-empty");
+  if (none) throw new Error("expected empty claim after drain");
+
   // cleanup smoke files
   await fs.unlink(fp).catch(() => {});
   await fs.unlink(path.join(GITHUB_OUTBOX_DIR, `${failedId}.json`)).catch(() => {});
+  for (const cid of [claimA, claimB]) {
+    await fs.unlink(path.join(GITHUB_OUTBOX_DIR, `${cid}.json`)).catch(() => {});
+    await fs.unlink(path.join(GITHUB_OUTBOX_DIR, `${cid}.claim.json`)).catch(() => {});
+  }
 
   console.log("smoke-github-outbox: ok", { id, failedId });
 }
