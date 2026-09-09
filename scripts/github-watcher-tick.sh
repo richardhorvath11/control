@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# github-watcher-tick.sh — one standing-watcher tick for Control (V0.6)
+# github-watcher-tick.sh — one standing-watcher tick for Control (V0.6 + V0.7 chip 4 snapshots)
 #
 # Reads .control/watch.json + .control/pr-follows.json, polls primary PR and
 # active Slack-discovered follows (same repo only) via `gh`, diffs per-PR
@@ -45,6 +45,7 @@ WATCH_PATH="$CONTROL_DIR/watch.json"
 WATCH_EXAMPLE="$ROOT/watch.example.json"
 STATE_PATH="$CONTROL_DIR/github-watcher-state.json"
 FOLLOWS_PATH="$CONTROL_DIR/pr-follows.json"
+SNAP_DIR="$CONTROL_DIR/pr-snapshots"
 INBOX_URL="${CONTROL_BASE_URL%/}/api/github/inbox"
 
 need_cmd() {
@@ -57,7 +58,7 @@ need_cmd gh
 need_cmd curl
 need_cmd python3
 
-mkdir -p "$CONTROL_DIR"
+mkdir -p "$CONTROL_DIR" "$SNAP_DIR"
 
 # --- ensure watch.json ---
 if [[ ! -f "$WATCH_PATH" ]]; then
@@ -84,7 +85,7 @@ PY
 fi
 
 # --- load watch + follows + previous state, fetch PRs, diff, post ---
-export ROOT WATCH_PATH STATE_PATH FOLLOWS_PATH INBOX_URL CONTROL_BASE_URL DRY_RUN FORCE_POST
+export ROOT WATCH_PATH STATE_PATH FOLLOWS_PATH SNAP_DIR INBOX_URL CONTROL_BASE_URL DRY_RUN FORCE_POST
 python3 - <<'PY'
 from __future__ import annotations
 
@@ -100,6 +101,7 @@ from typing import Any
 WATCH_PATH = os.environ["WATCH_PATH"]
 STATE_PATH = os.environ["STATE_PATH"]
 FOLLOWS_PATH = os.environ["FOLLOWS_PATH"]
+SNAP_DIR = os.environ["SNAP_DIR"]
 INBOX_URL = os.environ["INBOX_URL"]
 DRY_RUN = os.environ.get("DRY_RUN", "0") in ("1", "true", "TRUE", "yes")
 FORCE_POST = os.environ.get("FORCE_POST", "0") in ("1", "true", "TRUE", "yes")
@@ -126,6 +128,82 @@ def write_json(path: str, data: Any) -> None:
         json.dump(data, f, indent=2)
         f.write("\n")
     os.replace(tmp, path)
+
+def write_pr_snapshot(
+    *,
+    repo: str,
+    pr: int,
+    title: str,
+    url: str,
+    head_sha: str,
+    ci_conclusion: str | None,
+    ci_url: str | None,
+    requested_users: list[str],
+    requested_teams: list[str],
+    pr_data: dict,
+) -> None:
+    """V0.7 chip 4: write Live Review snapshot JSON (Control reads via API)."""
+    os.makedirs(SNAP_DIR, exist_ok=True)
+    files: list[dict[str, str]] = []
+    try:
+        raw_files = gh_json(
+            ["api", f"repos/{repo}/pulls/{pr}/files", "--paginate"]
+        )
+        if isinstance(raw_files, list):
+            for f in raw_files:
+                if not isinstance(f, dict):
+                    continue
+                path = str(f.get("filename") or "").strip()
+                if not path:
+                    continue
+                st = str(f.get("status") or "modified").lower()
+                if st == "renamed":
+                    st = "modified"
+                elif st not in ("added", "removed", "modified"):
+                    st = "modified"
+                files.append({"path": path, "status": st})
+    except Exception:
+        for f in pr_data.get("files") or []:
+            if not isinstance(f, dict):
+                continue
+            path = str(f.get("path") or "").strip()
+            if not path:
+                continue
+            add = int(f.get("additions") or 0)
+            dele = int(f.get("deletions") or 0)
+            if add > 0 and dele == 0:
+                st = "added"
+            elif dele > 0 and add == 0:
+                st = "removed"
+            else:
+                st = "modified"
+            files.append({"path": path, "status": st})
+    files = files[:200]
+    owner, _, name = repo.partition("/")
+    out_path = os.path.join(
+        SNAP_DIR,
+        f"{(owner or 'owner').replace('/', '-')}-{(name or 'repo').replace('/', '-')}-{pr}.json",
+    )
+    snap = {
+        "repo": repo.lower(),
+        "pr": pr,
+        "title": title,
+        "url": url,
+        "head_sha": head_sha or "",
+        "ci": {
+            "conclusion": (ci_conclusion or "UNKNOWN"),
+            "url": ci_url or f"{url}/checks",
+        },
+        "files": files,
+        "requested_reviewers": {
+            "users": list(requested_users),
+            "teams": list(requested_teams),
+        },
+        "updated_at": now_iso(),
+    }
+    write_json(out_path, snap)
+    print(f"snapshot wrote {os.path.relpath(out_path, ROOT)} files={len(files)}")
+
 
 
 def gh_json(args: list[str]) -> Any:
@@ -417,7 +495,7 @@ for job in pr_jobs:
                 "--repo",
                 repo,
                 "--json",
-                "headRefOid,title,url,statusCheckRollup,reviewRequests,reviews",
+                "headRefOid,title,url,statusCheckRollup,reviewRequests,reviews,files",
             ]
         )
     except subprocess.CalledProcessError:

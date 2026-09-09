@@ -296,6 +296,9 @@ export function buildReviewItemFromResult(opts: {
     scopeFooter: scopeNotes,
     status: "pending",
     agentId: opts.agentId,
+    repo,
+    pr,
+    prUrl: githubPrUrlLocal(repo, pr),
   };
 }
 

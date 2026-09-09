@@ -3,7 +3,7 @@
  * Chip 3b: Live default backend=worker (enqueue job; local Pro Claude claims).
  * Chip 3: opt-in control-review-run backends (command/fake/claude-cli).
  * Demo keeps local sim. Fake = test-only; Live default is NOT fake.
- * Snapshot UI / GitHub outbox / skill packs = later chips (cut).
+ * Chip 4: Live Review snapshot chrome (gh snapshot + GET API). Outbox = chip 5.
  */
 
 import type { Agent, AttentionItem, Finding, Provenance, ReviewItem } from "./types";
@@ -124,6 +124,7 @@ export function buildPrReviewItem(opts: {
   const repoNorm = normalizeRepo(opts.repo);
   const pr = Math.trunc(opts.pr);
   const title = prReviewAgentName(repoNorm, pr);
+  const url = githubPrUrl(repoNorm, pr);
   return {
     id: opts.id,
     kind: "pr_review",
@@ -141,6 +142,9 @@ export function buildPrReviewItem(opts: {
     scopeFooter: `Examined ${repoNorm}#${pr} · open ask provenance. Absence of findings is not approval.`,
     status: "pending",
     agentId: opts.agentId,
+    repo: repoNorm,
+    pr,
+    prUrl: url,
   };
 }
 

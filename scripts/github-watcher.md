@@ -82,6 +82,11 @@ Event shapes match `src/lib/github-inbox.ts` (`GitHubInboxEvent`). Shared cap st
 }
 ```
 
+
+## Live Review snapshots (V0.7 chip 4)
+
+Each successful PR poll also writes `.control/pr-snapshots/{owner}-{repo}-{pr}.json` (title, CI, changed-files, reviewers). Control reads via `GET /api/github/snapshot?repo=&pr=` — no PAT in Control. Thin one-shot: `./scripts/github-pr-snapshot.sh --repo owner/name --pr N`.
+
 ## Follows (chip 4) — `.control/pr-follows.json`
 
 Sibling gitignored file (keeps Slack upsert off the primary snapshot file). Slack inbox **apply** upserts server-side; the watcher only reads/updates snapshots and purges expiry.

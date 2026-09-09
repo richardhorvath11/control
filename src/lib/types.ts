@@ -108,6 +108,12 @@ export interface ReviewItem {
   analysisNote: string;
   findings: Finding[];
   scopeFooter: string;
+  /** Live pr_review: owner/name (for snapshot GET). */
+  repo?: string;
+  /** Live pr_review: PR number (for snapshot GET). */
+  pr?: number;
+  /** Deep-link to real GitHub PR when known. */
+  prUrl?: string;
   draftText?: string;
   targetLabel?: string;
   /** Real Slack thread to post into (E2E harness). */

@@ -1,8 +1,29 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useControlStore } from "@/lib/store";
+import {
+  repoPrFromReviewTitle,
+  type PrSnapshot,
+} from "@/lib/pr-snapshot-client";
+
+const FILE_CAP = 20;
+
+type SnapshotState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ok"; snapshot: PrSnapshot; path: string }
+  | { status: "missing"; detail: string; path?: string }
+  | { status: "error"; detail: string };
+
+function ciChipClass(conclusion: string): string {
+  const c = conclusion.toUpperCase();
+  if (c === "FAILURE") return "border-blocked/50 text-blocked";
+  if (c === "PENDING") return "border-amber/50 text-amber";
+  if (c === "SUCCESS") return "border-border text-muted"; // not "approved"
+  return "border-border text-muted";
+}
 
 export function ReviewWorkspace({ itemId }: { itemId: string }) {
   const item = useControlStore((s) =>
@@ -17,6 +38,15 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
   const [selectedFinding, setSelectedFinding] = useState(
     item?.findings[0]?.id ?? null
   );
+  const [snapState, setSnapState] = useState<SnapshotState>({ status: "idle" });
+
+  const repoPr = useMemo(() => {
+    if (!item || item.kind !== "pr_review") return null;
+    if (item.repo && item.pr && item.pr > 0) {
+      return { repo: item.repo, pr: item.pr };
+    }
+    return repoPrFromReviewTitle(item.title);
+  }, [item]);
 
   // Resume polling if we remount while still queued (e.g. refresh / navigate back).
   useEffect(() => {
@@ -30,6 +60,79 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item?.id, item?.status, item?.slackOutboxId, item?.slackQueueStatus]);
 
+  // Chip 4: load gh snapshot for Live pr_review (Control reads disk via API).
+  useEffect(() => {
+    if (!item || item.kind !== "pr_review") {
+      setSnapState({ status: "idle" });
+      return;
+    }
+    if (!repoPr) {
+      // Seed / Demo narrative reviews may lack repo#pr — empty state, no crash.
+      setSnapState({
+        status: "missing",
+        detail: "Snapshot missing — run watcher",
+      });
+      return;
+    }
+    let cancelled = false;
+    setSnapState({ status: "loading" });
+    const q = new URLSearchParams({
+      repo: repoPr.repo,
+      pr: String(repoPr.pr),
+    });
+    void (async () => {
+      try {
+        const res = await fetch(`/api/github/snapshot?${q.toString()}`);
+        const data = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          snapshot?: PrSnapshot;
+          path?: string;
+          error?: string;
+          detail?: string;
+        };
+        if (cancelled) return;
+        if (res.status === 404) {
+          setSnapState({
+            status: "missing",
+            detail:
+              data.error ||
+              data.detail ||
+              "Snapshot missing — run watcher",
+            path: data.path,
+          });
+          return;
+        }
+        if (!res.ok || !data.snapshot) {
+          setSnapState({
+            status: "error",
+            detail: data.error || data.detail || "Failed to load snapshot",
+          });
+          return;
+        }
+        setSnapState({
+          status: "ok",
+          snapshot: data.snapshot,
+          path: data.path || "",
+        });
+      } catch (err) {
+        if (cancelled) return;
+        setSnapState({
+          status: "error",
+          detail:
+            err instanceof Error ? err.message : "Failed to load snapshot",
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [item?.id, item?.kind, repoPr?.repo, repoPr?.pr]);
+
+  useEffect(() => {
+    setDraft(item?.draftText ?? "");
+    setSelectedFinding(item?.findings[0]?.id ?? null);
+  }, [item?.id, item?.draftText, item?.findings]);
+
   if (!item) return null;
 
   const finding =
@@ -37,16 +140,39 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
   const isQueued = item.status === "queued";
   const queuePending = isQueued && item.slackQueueStatus !== "failed";
 
+  const snapshot = snapState.status === "ok" ? snapState.snapshot : null;
+  const headerTitle = snapshot?.title?.trim() || item.title;
+  const openPrUrl =
+    snapshot?.url ||
+    item.prUrl ||
+    (repoPr
+      ? `https://github.com/${repoPr.repo}/pull/${repoPr.pr}`
+      : null);
+  const files = (snapshot?.files ?? []).slice(0, FILE_CAP);
+  const filesMore = Math.max(0, (snapshot?.files?.length ?? 0) - FILE_CAP);
+
   return (
     <div className="px-8 py-6 max-w-3xl space-y-5">
       <header>
         <div className="chip mb-2">{item.label}</div>
-        <h2 className="text-[20px] font-semibold leading-7">{item.title}</h2>
+        <h2 className="text-[20px] font-semibold leading-7">{headerTitle}</h2>
         <p className="mt-2 text-[13px] text-muted">{item.analysisNote}</p>
         {item.kind === "pr_review" && (
-          <p className="mt-2 text-[12px] text-amber">
-            Analysis, not truth · No findings ≠ approved
-          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <p className="text-[12px] text-amber">
+              Analysis, not truth · No findings ≠ approved
+            </p>
+            {openPrUrl ? (
+              <a
+                href={openPrUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[12px] text-review hover:underline"
+              >
+                Open PR ↗
+              </a>
+            ) : null}
+          </div>
         )}
       </header>
 
@@ -178,6 +304,105 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
         </section>
       ) : (
         <>
+          {/* Chip 4 — PR snapshot panel (title/CI/files from gh; not seed lorem) */}
+          {item.kind === "pr_review" && (
+            <section className="panel p-5 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-[12px] uppercase tracking-wide text-muted">
+                  PR snapshot
+                </h3>
+                <span className="text-[11px] text-muted">
+                  Analysis overlay · not an approval
+                </span>
+              </div>
+
+              {snapState.status === "loading" ? (
+                <div className="text-[13px] text-muted">Loading snapshot…</div>
+              ) : null}
+
+              {snapState.status === "missing" || snapState.status === "error" ? (
+                <div className="rounded-lg border border-amber/40 bg-[#241c10] px-3 py-3 text-[13px] leading-5 space-y-2">
+                  <div className="text-amber font-medium">
+                    {snapState.status === "missing"
+                      ? "Snapshot missing — run watcher"
+                      : snapState.detail}
+                  </div>
+                  <p className="text-muted text-[12px]">
+                    Findings below still render. Refresh the snapshot with:
+                  </p>
+                  <pre className="whitespace-pre-wrap rounded-md border border-border bg-bg px-3 py-2 font-mono text-[11px] text-muted">
+                    {repoPr
+                      ? `./scripts/github-pr-snapshot.sh --repo ${repoPr.repo} --pr ${repoPr.pr}\n# or: ./scripts/github-watcher-tick.sh`
+                      : `./scripts/github-watcher-tick.sh`}
+                  </pre>
+                </div>
+              ) : null}
+
+              {snapshot ? (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                    <span
+                      className={`chip ${ciChipClass(snapshot.ci.conclusion)}`}
+                    >
+                      CI · {snapshot.ci.conclusion}
+                    </span>
+                    {snapshot.ci.url ? (
+                      <a
+                        href={snapshot.ci.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-review hover:underline"
+                      >
+                        Open checks ↗
+                      </a>
+                    ) : null}
+                    <span className="font-mono text-muted">
+                      head {snapshot.head_sha.slice(0, 7) || "—"}
+                    </span>
+                    <span className="text-muted">
+                      {snapshot.repo}#{snapshot.pr}
+                    </span>
+                  </div>
+
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-muted mb-2">
+                      Changed files
+                      {snapshot.files.length
+                        ? ` · ${snapshot.files.length}`
+                        : ""}
+                    </div>
+                    {files.length === 0 ? (
+                      <div className="text-[13px] text-muted">
+                        No files in snapshot.
+                      </div>
+                    ) : (
+                      <ul className="space-y-1">
+                        {files.map((f) => (
+                          <li
+                            key={`${f.status}:${f.path}`}
+                            className="row flex items-center gap-2 px-3 py-1.5"
+                          >
+                            <span className="chip font-mono text-[10px] shrink-0">
+                              {f.status}
+                            </span>
+                            <span className="font-mono text-[12px] truncate">
+                              {f.path}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {filesMore > 0 ? (
+                      <div className="mt-1 text-[11px] text-muted">
+                        +{filesMore} more (showing {FILE_CAP})
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </section>
+          )}
+
           <section className="space-y-2">
             <h3 className="text-[12px] uppercase tracking-wide text-muted">
               Findings
@@ -303,8 +528,76 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                     </Link>
                   ))}
               </div>
+
+              {/* Chip 5 stub — draft comment visible but disabled; do not fake a post */}
+              {item.kind === "pr_review" ? (
+                <div className="border-t border-border pt-4 space-y-2">
+                  <div className="text-[11px] uppercase tracking-wide text-muted">
+                    Draft comment
+                  </div>
+                  <textarea
+                    className="w-full min-h-[72px] rounded-lg border border-border bg-bg p-3 text-[13px] leading-5 text-muted opacity-60 cursor-not-allowed"
+                    disabled
+                    readOnly
+                    value=""
+                    placeholder="Draft GitHub comment — Chip 5"
+                    aria-label="Draft GitHub comment (Chip 5 — disabled)"
+                  />
+                  <button
+                    type="button"
+                    className="btn-secondary opacity-50 cursor-not-allowed"
+                    disabled
+                    title="Chip 5"
+                  >
+                    Post comment (Chip 5)
+                  </button>
+                </div>
+              ) : null}
             </section>
           )}
+
+          {/* Actions when no findings but still pr_review */}
+          {!finding && item.kind === "pr_review" ? (
+            <section className="panel p-5 space-y-3">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => approveReview(item.id)}
+                >
+                  Approve analysis
+                </button>
+                <button
+                  type="button"
+                  className="btn-danger"
+                  onClick={() => rejectReview(item.id)}
+                >
+                  Reject
+                </button>
+              </div>
+              <div className="border-t border-border pt-4 space-y-2">
+                <div className="text-[11px] uppercase tracking-wide text-muted">
+                  Draft comment
+                </div>
+                <textarea
+                  className="w-full min-h-[72px] rounded-lg border border-border bg-bg p-3 text-[13px] leading-5 text-muted opacity-60 cursor-not-allowed"
+                  disabled
+                  readOnly
+                  value=""
+                  placeholder="Draft GitHub comment — Chip 5"
+                  aria-label="Draft GitHub comment (Chip 5 — disabled)"
+                />
+                <button
+                  type="button"
+                  className="btn-secondary opacity-50 cursor-not-allowed"
+                  disabled
+                  title="Chip 5"
+                >
+                  Post comment (Chip 5)
+                </button>
+              </div>
+            </section>
+          ) : null}
         </>
       )}
 

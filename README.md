@@ -1,4 +1,4 @@
-# Control — V0.7 (chip 3b: Local Pro Claude worker)
+# Control — V0.7 (chip 4: Live Review workspace)
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
 
@@ -349,7 +349,52 @@ npx tsx scripts/smoke-review-worker.ts
 curl -sS http://localhost:3000/api/review/run
 ```
 
-Out of chip 3b (still cut): full pr-review skill/plugin/prompt pack · requiring Console API keys · Next spawn as Live default · agent builder · free-form prompt IDE · fake-as-Live-default · live Review snapshot chrome (chip 4) · GitHub outbox (chip 5) · Team/Mac/chat-home.
+Out of chip 3b (still cut at the time): full pr-review skill/plugin/prompt pack · requiring Console API keys · Next spawn as Live default · agent builder · free-form prompt IDE · fake-as-Live-default · GitHub outbox (chip 5) · Team/Mac/chat-home. **Chip 4 (Live Review snapshot chrome) shipped below.**
+
+
+### Live Review workspace (V0.7 chip 4)
+
+For **pr_review** items (esp. Live / worker results), Review is a **workspace over the real PR** — not a full IDE diff. Header shows the PR title (from snapshot when present), **Analysis, not truth**, and **Open PR** (real `github.com` URL). Findings remain runner Analysis labeled as claims, not approval. CI SUCCESS is a status chip — **not** a green-check-as-approved.
+
+#### PR snapshots (operator `gh`; no PAT in Control)
+
+Watcher tick or thin helper writes gitignored:
+
+`.control/pr-snapshots/{owner}-{repo}-{pr}.json`
+
+```json
+{
+  "repo": "owner/name",
+  "pr": 32,
+  "title": "…",
+  "url": "https://github.com/owner/name/pull/32",
+  "head_sha": "abc…",
+  "ci": { "conclusion": "SUCCESS|FAILURE|PENDING|…", "url": "…" },
+  "files": [{ "path": "…", "status": "modified|added|removed" }],
+  "requested_reviewers": { "users": [], "teams": [] },
+  "updated_at": "ISO"
+}
+```
+
+```bash
+# Refresh one PR (uses watch.json when args omitted)
+./scripts/github-pr-snapshot.sh --repo owner/name --pr 32
+# Or let the standing watcher refresh snapshots on each tick:
+./scripts/github-watcher-tick.sh
+```
+
+| | |
+|--|--|
+| API | `GET /api/github/snapshot?repo=&pr=` → snapshot JSON; **404** `{ error: "Snapshot missing — run watcher" }` |
+| Enqueue | `review_job.v1.snapshot_path` preferred when the file exists on disk |
+| UI | Snapshot panel: CI chip+link, head SHA, file list (path+status, cap ~20, **no hunks**) |
+| Empty | Clear CTA to run watcher/script; **findings still render**; no crash |
+| Draft comment | Visible but **disabled** (“Chip 5”) — do not fake a GitHub post |
+| Stay cut | Full IDE / Monaco / patch hunks · merge button · GitHub outbox (chip 5) |
+
+```bash
+npx tsx scripts/smoke-pr-snapshot.ts
+```
 
 ### Demo / E2E reset
 
@@ -378,7 +423,8 @@ Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slac
 | Slack docs | `scripts/slack-pr-watcher.md` |
 | Watch template | `watch.example.json` → `.control/watch.json` |
 | GitHub state | `.control/github-watcher-state.json` (gitignored) |
-| PR follows (chip 4) | `.control/pr-follows.json` (gitignored; Slack apply upserts) |
+| PR follows (V0.6 chip 4) | `.control/pr-follows.json` (gitignored; Slack apply upserts) |
+| PR snapshots (V0.7 chip 4) | `.control/pr-snapshots/{owner}-{repo}-{pr}.json` (gitignored; gh/watcher writes) |
 | Slack cursor state | `.control/slack-watcher-state.json` keyed by `channel_id` → last `ts` |
 | Follow smoke | `npx tsx scripts/smoke-pr-follows.ts` |
 | Auto-kick smoke | `npx tsx scripts/smoke-auto-kick-review.ts` |
@@ -467,4 +513,4 @@ Command palette (⌘K) opens the launcher (not chat). Includes **Open Live setup
 
 ## Explicit cuts
 
-Team surface, auth, org-wide GitHub / org-wide Slack, channels without PR-URL filter, webhooks-in-Control, NLP without URL, live Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological feed, agent builder / free-form prompt, real LLM worker, live Review workspace, GitHub comment outbox, watch.autoReview policy, model-agnostic runner, Team/Mac/chat-home, baking seed as default dogfood, auto-merge, lorem, auto-send without confirm, Slack app / bot-token inside Next, GitHub App / PAT inside Control, raising external Needs-you cap without product call, chips 3–5.
+Team surface, auth, org-wide GitHub / org-wide Slack, channels without PR-URL filter, webhooks-in-Control, NLP without URL, live Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological feed, agent builder / free-form prompt, GitHub comment outbox (chip 5), watch.autoReview policy, model-agnostic runner, Team/Mac/chat-home, baking seed as default dogfood, auto-merge, lorem, auto-send without confirm, Slack app / bot-token inside Next, GitHub App / PAT inside Control, raising external Needs-you cap without product call, chip 5 outbox, full IDE diff / Monaco / merge button.

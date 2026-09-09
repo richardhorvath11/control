@@ -5,6 +5,7 @@
 import { spawnSync } from "child_process";
 import { promises as fs } from "fs";
 import path from "path";
+import { preferSnapshotPath } from "./pr-snapshot";
 import {
   NO_REVIEW_BACKEND_DETAIL,
   REVIEW_JOB_SCHEMA,
@@ -80,6 +81,16 @@ function buildJob(input: InvokeReviewRunnerInput): ControlReviewJobV1 | null {
   return job;
 }
 
+/** Fill snapshot_path from disk when caller omitted it (chip 4). */
+async function withPreferredSnapshot(
+  job: ControlReviewJobV1
+): Promise<ControlReviewJobV1> {
+  if (job.snapshot_path?.trim()) return job;
+  const preferred = await preferSnapshotPath(job.repo, job.pr);
+  if (preferred) return { ...job, snapshot_path: preferred };
+  return job;
+}
+
 /** Live worker path: write job only — do not server-spawn claude. */
 export async function enqueueReviewJob(
   input: InvokeReviewRunnerInput
@@ -93,10 +104,11 @@ export async function enqueueReviewJob(
     }
   | { ok: false; code: "BAD_JOB"; error: string }
 > {
-  const job = buildJob(input);
-  if (!job) {
+  const built = buildJob(input);
+  if (!built) {
     return { ok: false, code: "BAD_JOB", error: "repo and positive pr required" };
   }
+  const job = await withPreferredSnapshot(built);
   const jobPath = await writeReviewJob(job);
   return {
     ok: true,
@@ -136,10 +148,11 @@ export async function invokeReviewRunner(
     };
   }
 
-  const job = buildJob(input);
-  if (!job) {
+  const built = buildJob(input);
+  if (!built) {
     return { ok: false, code: "BAD_JOB", error: "repo and positive pr required" };
   }
+  const job = await withPreferredSnapshot(built);
 
   const jobPath = await writeReviewJob(job);
   const resultPath = reviewResultPath(job.job_id);
