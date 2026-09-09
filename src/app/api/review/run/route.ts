@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { invokeReviewRunner } from "@/lib/invoke-review-runner";
-import { NO_REVIEW_BACKEND_DETAIL, resolveReviewBackend } from "@/lib/review-runner";
+import {
+  NO_REVIEW_BACKEND_DETAIL,
+  WAITING_FOR_LOCAL_WORKER_DETAIL,
+  resolveReviewBackend,
+} from "@/lib/review-runner";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -17,9 +21,10 @@ type Body = {
 };
 
 /**
- * POST /api/review/run — write control.review_job.v1, invoke control-review-run,
- * return control.review_result.v1. Live path only from the client worker.
- * No model/GitHub/Slack tokens stored in Control.
+ * POST /api/review/run — Live review path.
+ * Default backend=worker: write control.review_job.v1 only (no server-spawn claude);
+ * client polls GET /api/review/result?job_id=… after local worker writes result.
+ * Other backends (command / fake / claude-cli / cursor-cloud): invoke control-review-run.
  */
 export async function POST(req: NextRequest) {
   let body: Body;
@@ -43,7 +48,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Fail closed before spawn when unset — do not invent findings.
   if (!resolveReviewBackend()) {
     return NextResponse.json(
       {
@@ -87,8 +91,21 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  if ("pending" in outcome && outcome.pending) {
+    return NextResponse.json({
+      ok: true,
+      pending: true,
+      backend: outcome.backend,
+      job: outcome.job,
+      jobPath: outcome.jobPath,
+      resultPath: outcome.resultPath,
+      detail: WAITING_FOR_LOCAL_WORKER_DETAIL,
+    });
+  }
+
   return NextResponse.json({
     ok: true,
+    pending: false,
     backend: outcome.backend,
     exitCode: outcome.exitCode,
     job: outcome.job,
@@ -106,7 +123,14 @@ export async function GET() {
     backend,
     configured: !!backend,
     detail: backend
-      ? `CONTROL_REVIEW_BACKEND=${backend}`
+      ? backend === "worker"
+        ? `CONTROL_REVIEW_BACKEND=worker (default) — ${WAITING_FOR_LOCAL_WORKER_DETAIL}`
+        : `CONTROL_REVIEW_BACKEND=${backend}`
       : NO_REVIEW_BACKEND_DETAIL,
+    dogfood: {
+      prefer: "worker",
+      auth: "claude login or CLAUDE_CODE_OAUTH_TOKEN from claude setup-token — no ANTHROPIC_API_KEY required",
+      cli: "./scripts/control-review-worker --once|--watch",
+    },
   });
 }

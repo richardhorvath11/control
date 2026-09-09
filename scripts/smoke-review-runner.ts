@@ -1,5 +1,5 @@
 /**
- * V0.7 chip 3 smoke: control-review-run fake + bad JSON exit 3 + Live missing backend.
+ * V0.7 chip 3/3b smoke: control-review-run fake + bad JSON exit 3 + Live default worker (not fake).
  * Run: npx tsx scripts/smoke-review-runner.ts
  */
 import { spawnSync } from "child_process";
@@ -197,18 +197,28 @@ fs.writeFileSync(out, JSON.stringify({
   assert(raw.status === "ok" && raw.findings?.[0]?.title === "Cmd finding", "command result");
 }
 
-// --- Live missing backend behavior (unit) ---
+// --- Live default backend = worker (NOT fake) ---
 {
   const prev = process.env.CONTROL_REVIEW_BACKEND;
   delete process.env.CONTROL_REVIEW_BACKEND;
-  assert(resolveReviewBackend() === null, "Live default backend is unset (NOT fake)");
+  assert(resolveReviewBackend() === "worker", "Live default backend is worker (NOT fake)");
   assert(
-    /No review backend/i.test(NO_REVIEW_BACKEND_DETAIL),
-    "NO_REVIEW_BACKEND_DETAIL message"
+    resolveReviewBackend({ CONTROL_REVIEW_BACKEND: "fake" } as unknown as NodeJS.ProcessEnv) ===
+      "fake",
+    "fake still selectable for smoke"
   );
-  // Simulate Live landFailed: no templated findings invented
+  assert(
+    resolveReviewBackend({ CONTROL_REVIEW_BACKEND: "command" } as unknown as NodeJS.ProcessEnv) ===
+      "command",
+    "command backend still honored"
+  );
+  assert(
+    /worker/i.test(NO_REVIEW_BACKEND_DETAIL),
+    "NO_REVIEW_BACKEND_DETAIL lists worker"
+  );
+  // Live worker path enqueues only — no invented findings until result file
   const invented = false;
-  assert(!invented, "Live missing backend does not invent findings");
+  assert(!invented, "Live worker default does not invent findings");
   if (prev !== undefined) process.env.CONTROL_REVIEW_BACKEND = prev;
   else delete process.env.CONTROL_REVIEW_BACKEND;
 }
@@ -233,5 +243,5 @@ if (failed > 0) {
 }
 console.log("\nAll review-runner smoke checks passed.");
 console.log(
-  "Note: Live UI default is NOT fake — set CONTROL_REVIEW_BACKEND explicitly (fake|command|claude-cli|cursor-cloud)."
+  "Note: Live UI default is worker (NOT fake). Prefer ./scripts/control-review-worker for dogfood."
 );

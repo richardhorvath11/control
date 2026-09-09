@@ -1,5 +1,5 @@
 /**
- * Server-side invoke of scripts/control-review-run for Live PR review workers.
+ * Server-side review invoke: worker enqueue (Live default) or control-review-run spawn.
  */
 
 import { spawnSync } from "child_process";
@@ -15,6 +15,7 @@ import {
   writeReviewJob,
   type ControlReviewJobV1,
   type ControlReviewResultV1,
+  type ReviewBackend,
 } from "./review-runner";
 
 export type InvokeReviewRunnerInput = {
@@ -31,6 +32,15 @@ export type InvokeReviewRunnerInput = {
 export type InvokeReviewRunnerOutcome =
   | {
       ok: true;
+      pending: true;
+      job: ControlReviewJobV1;
+      backend: "worker";
+      jobPath: string;
+      resultPath: string;
+    }
+  | {
+      ok: true;
+      pending?: false;
       job: ControlReviewJobV1;
       result: ControlReviewResultV1;
       exitCode: number;
@@ -40,7 +50,12 @@ export type InvokeReviewRunnerOutcome =
     }
   | {
       ok: false;
-      code: "NO_BACKEND" | "BAD_JOB" | "BAD_RESULT" | "RUNNER_EXIT" | "INVALID_BACKEND";
+      code:
+        | "NO_BACKEND"
+        | "BAD_JOB"
+        | "BAD_RESULT"
+        | "RUNNER_EXIT"
+        | "INVALID_BACKEND";
       error: string;
       exitCode?: number;
       job?: ControlReviewJobV1;
@@ -48,6 +63,49 @@ export type InvokeReviewRunnerOutcome =
       jobPath?: string;
       resultPath?: string;
     };
+
+function buildJob(input: InvokeReviewRunnerInput): ControlReviewJobV1 | null {
+  const job: ControlReviewJobV1 = {
+    schema: REVIEW_JOB_SCHEMA,
+    job_id: input.job_id?.trim() || newReviewJobId(),
+    repo: input.repo.trim(),
+    pr: Math.trunc(input.pr),
+    provenance: input.provenance ?? [],
+  };
+  if (input.head_sha?.trim()) job.head_sha = input.head_sha.trim();
+  if (input.workstream_id?.trim()) job.workstream_id = input.workstream_id.trim();
+  if (input.attention_id?.trim()) job.attention_id = input.attention_id.trim();
+  if (input.snapshot_path?.trim()) job.snapshot_path = input.snapshot_path.trim();
+  if (!job.repo || !Number.isFinite(job.pr) || job.pr <= 0) return null;
+  return job;
+}
+
+/** Live worker path: write job only — do not server-spawn claude. */
+export async function enqueueReviewJob(
+  input: InvokeReviewRunnerInput
+): Promise<
+  | {
+      ok: true;
+      job: ControlReviewJobV1;
+      jobPath: string;
+      resultPath: string;
+      backend: "worker";
+    }
+  | { ok: false; code: "BAD_JOB"; error: string }
+> {
+  const job = buildJob(input);
+  if (!job) {
+    return { ok: false, code: "BAD_JOB", error: "repo and positive pr required" };
+  }
+  const jobPath = await writeReviewJob(job);
+  return {
+    ok: true,
+    job,
+    jobPath,
+    resultPath: reviewResultPath(job.job_id),
+    backend: "worker",
+  };
+}
 
 export async function invokeReviewRunner(
   input: InvokeReviewRunnerInput
@@ -62,19 +120,24 @@ export async function invokeReviewRunner(
     };
   }
 
-  const job: ControlReviewJobV1 = {
-    schema: REVIEW_JOB_SCHEMA,
-    job_id: (input.job_id?.trim() || newReviewJobId()),
-    repo: input.repo.trim(),
-    pr: Math.trunc(input.pr),
-    provenance: input.provenance ?? [],
-  };
-  if (input.head_sha?.trim()) job.head_sha = input.head_sha.trim();
-  if (input.workstream_id?.trim()) job.workstream_id = input.workstream_id.trim();
-  if (input.attention_id?.trim()) job.attention_id = input.attention_id.trim();
-  if (input.snapshot_path?.trim()) job.snapshot_path = input.snapshot_path.trim();
+  // Gastown / Live default: enqueue only; local worker claims + runs claude -p.
+  if (backend === "worker") {
+    const enq = await enqueueReviewJob(input);
+    if (!enq.ok) {
+      return { ok: false, code: "BAD_JOB", error: enq.error };
+    }
+    return {
+      ok: true,
+      pending: true,
+      job: enq.job,
+      backend: "worker",
+      jobPath: enq.jobPath,
+      resultPath: enq.resultPath,
+    };
+  }
 
-  if (!job.repo || !Number.isFinite(job.pr) || job.pr <= 0) {
+  const job = buildJob(input);
+  if (!job) {
     return { ok: false, code: "BAD_JOB", error: "repo and positive pr required" };
   }
 
@@ -187,3 +250,5 @@ export async function invokeReviewRunner(
     resultPath,
   };
 }
+
+export type { ReviewBackend };

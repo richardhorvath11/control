@@ -1,4 +1,4 @@
-# Control — V0.7 (chip 3: Review runner invoke hook)
+# Control — V0.7 (chip 3b: Local Pro Claude worker)
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
 
@@ -264,11 +264,28 @@ In **Live** mode, when a coalesce-class Needs-you appears (`ext-att-review-*` fr
 npx tsx scripts/smoke-auto-kick-review.ts
 ```
 
-### Review runner invoke hook (V0.7 chip 3)
+### Review runner invoke hook (V0.7 chip 3) + Local Pro Claude worker (chip 3b)
 
-**Not a skill.** Chip 3 ships a configurable invoke wrapper: Control writes `control.review_job.v1`, runs an operator-configured backend via `./scripts/control-review-run`, reads `control.review_result.v1`, and lands findings in Review (Analysis-not-truth). Operators point env at “run this command / Claude CLI / later Cursor cloud.” **Do not** ship a pr-review skill, plugin, or prompt library in-product.
+**Not a skill.** Chip 3 ships a configurable invoke wrapper; chip 3b makes the **Live dogfood default** a local Gastown worker on the operator machine (Claude Pro), not server-spawned Claude or Console API keys. Control writes `control.review_job.v1`, the local worker runs `claude -p` (no `--bare`, `ANTHROPIC_API_KEY` unset), writes `control.review_result.v1`, and Control imports into Review (Analysis-not-truth). **Do not** ship a pr-review skill, plugin, or prompt library in-product.
 
-#### CLI
+#### Default Live dogfood path (worker)
+
+1. Auto-kick / Delegate → `POST /api/review/run` writes `.control/review-jobs/{job_id}.json` and sets Agent **Running** with detail **“Waiting for local worker (claude Pro).”** No Review findings until a result appears.
+2. On the operator machine (Claude Pro logged in):
+
+```bash
+./scripts/control-review-worker --once    # claim one pending job, exit
+./scripts/control-review-worker --watch   # loop until Ctrl-C
+```
+
+3. Worker claims oldest pending job (sidecar `.claimed` + `in-progress/`), runs `env -u ANTHROPIC_API_KEY claude -p "…"`, writes `.control/review-results/{job_id}.json`.
+4. Control polls `GET /api/review/result?job_id=…` (≈2s; server reads the results dir — client never imports `fs`) → same import path → Review + Agent Complete. No toast. No invented findings.
+
+**Auth (dogfood):** same-user `claude` login **or** `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`. **Never** require a Console `ANTHROPIC_API_KEY` for dogfood. If no worker claims the job within the wait window, Agent **Failed** with `start control-review-worker`.
+
+Worker exit codes: `0` ok · `1` no pending (`--once`) · `2` retryable · `3` parse · `4` claude missing. Failures still write `status: error` results so Control can land Agent Failed.
+
+#### Chip 3 CLI (external / advanced backends)
 
 ```bash
 ./scripts/control-review-run --in job.json --out result.json
@@ -291,7 +308,7 @@ Job → `.control/review-jobs/{job_id}.json` (and/or `--in`):
 }
 ```
 
-Result ← `--out` (or backend stdout when using `command`):
+Result ← `.control/review-results/{job_id}.json` (worker) or `--out` (command / control-review-run):
 
 ```json
 {
@@ -308,29 +325,31 @@ Result ← `--out` (or backend stdout when using `command`):
 
 | Knob | Values |
 |------|--------|
-| `CONTROL_REVIEW_BACKEND` | `claude-cli` \| `cursor-cloud` \| `fake` \| `command` |
+| `CONTROL_REVIEW_BACKEND` | `worker` (default when unset) \| `command` \| `fake` \| `claude-cli` \| `cursor-cloud` |
 | `CONTROL_REVIEW_COMMAND` | Optional when `command` — e.g. `my-pr-review --in {{in}} --out {{out}}` |
 
 | Backend | Behavior |
 |---------|----------|
-| `claude-cli` | Invoke Claude CLI with job JSON; parse into result (retry once on parse fail). Minimal glue prompt **inside the wrapper only**. If `claude` missing → exit 4. |
-| `cursor-cloud` | Stub: result `status: error` / “cursor-cloud not configured”; same `--in`/`--out` shape. |
+| `worker` | **Live default.** Enqueue job only; do **not** server-spawn claude. Local `./scripts/control-review-worker` claims + runs Pro Claude. |
+| `command` | Unchanged — spawn operator `--in`/`--out` wrapper via `control-review-run`. |
 | `fake` | Templated fixture findings — **CI/smoke/Demo QA only**. **Live must not default here.** |
-| `command` | Spawn operator command with `{{in}}` / `{{out}}` substituted. |
+| `claude-cli` | Advanced/opt-in server-spawn via `control-review-run` (prefer **worker** for dogfood). Minimal glue prompt inside the wrapper only. |
+| `cursor-cloud` | Stub: result `status: error` / “cursor-cloud not configured”. |
 
-**Live default:** `CONTROL_REVIEW_BACKEND` unset → Agent **Failed/Blocked** with “No review backend” — **no invented findings**. Set the env explicitly for Live (prefer `command` or `claude-cli`; use `fake` only for smoke).
+**Live default:** `CONTROL_REVIEW_BACKEND` unset → **`worker`**. Prefer worker for dogfood; use `fake` only for smoke; `claude-cli` is opt-in.
 
-Demo keeps the local sim timer for Monday narrative; Live always goes through `POST /api/review/run` → `control-review-run`. Manual **Delegate** PR review uses the same `startPrReviewWorker` path as auto-kick.
+Demo keeps the local sim timer for Monday narrative; Live goes through `POST /api/review/run` (enqueue or sync invoke) + result poll for worker. Manual **Delegate** PR review uses the same `startPrReviewWorker` path as auto-kick (BUG-RR1: client-safe contracts only; enqueue/poll via API).
 
-Job/result files live under gitignored `.control/review-jobs/`. No model / GitHub / Slack tokens added to Control.
+Job / claim / result paths live under gitignored `.control/` (`review-jobs/`, `review-jobs/in-progress/`, `review-results/`). No model / GitHub / Slack tokens added to Control. No `ANTHROPIC_API_KEY` required in `.env.example`.
 
 ```bash
 npx tsx scripts/smoke-review-runner.ts
+npx tsx scripts/smoke-review-worker.ts
 # probe (dev server):
 curl -sS http://localhost:3000/api/review/run
 ```
 
-Out of chip 3 (still cut): full pr-review skill/plugin/prompt pack · agent builder · free-form prompt IDE · vendor-locked schema · fake-as-Live-default · live Review snapshot chrome · GitHub outbox · Team/Mac/chat-home · chips 4–5.
+Out of chip 3b (still cut): full pr-review skill/plugin/prompt pack · requiring Console API keys · Next spawn as Live default · agent builder · free-form prompt IDE · fake-as-Live-default · live Review snapshot chrome (chip 4) · GitHub outbox (chip 5) · Team/Mac/chat-home.
 
 ### Demo / E2E reset
 
@@ -364,8 +383,10 @@ Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slac
 | Follow smoke | `npx tsx scripts/smoke-pr-follows.ts` |
 | Auto-kick smoke | `npx tsx scripts/smoke-auto-kick-review.ts` |
 | Review runner smoke | `npx tsx scripts/smoke-review-runner.ts` |
+| Review worker smoke | `npx tsx scripts/smoke-review-worker.ts` |
 | Multi-channel watch smoke | `npx tsx scripts/smoke-watch-multi-channel.ts` |
 | Review runner CLI | `./scripts/control-review-run --in job.json --out result.json` |
+| Local Pro worker CLI | `./scripts/control-review-worker --once` / `--watch` |
 
 ### One GitHub tick
 
@@ -398,7 +419,7 @@ Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, infinite fol
 - **Next.js App Router** + TypeScript + Tailwind CSS
 - **Zustand** client store hydrated from `src/lib/seed.json`
 - No auth, no live Slack ingestion, no database, **no GitHub/Slack tokens in Control**
-- Agent delegation + Live auto-kick PR review via configurable `control-review-run` backend (Demo keeps 3–8s sim); completion increments the Review badge only (no toasts)
+- Agent delegation + Live auto-kick PR review via default local Pro Claude **worker** (or `control-review-run` for command/fake/claude-cli); Demo keeps 3–8s sim; completion increments the Review badge only (no toasts)
 - Slack write for the Priya draft only (confirm-gated outbox -> MCP)
 
 ## Seeded Monday

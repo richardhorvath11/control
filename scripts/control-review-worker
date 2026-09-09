@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# control-review-worker — V0.7 chip 3b Local Pro Claude worker (Gastown).
+# See scripts/control-review-worker.mjs and README.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+exec node "$ROOT/scripts/control-review-worker.mjs" "$@"

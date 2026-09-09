@@ -1,7 +1,8 @@
 /**
  * Client-safe review job/result contracts + mappers.
  * No Node fs / path / child_process — safe for Zustand store and client bundles.
- * Server I/O + spawn live in review-runner.ts / invoke-review-runner.ts.
+ * Server I/O + enqueue/spawn live in review-runner.ts / invoke-review-runner.ts.
+ * Live default backend is worker (local Pro Claude) — not fake.
  */
 
 import { normalizeRepo } from "./coalesce-review-ask";
@@ -11,6 +12,7 @@ export const REVIEW_JOB_SCHEMA = "control.review_job.v1" as const;
 export const REVIEW_RESULT_SCHEMA = "control.review_result.v1" as const;
 
 export type ReviewBackend =
+  | "worker"
   | "claude-cli"
   | "cursor-cloud"
   | "fake"
@@ -46,6 +48,7 @@ export type ControlReviewResultV1 = {
 
 export function isReviewBackend(v: unknown): v is ReviewBackend {
   return (
+    v === "worker" ||
     v === "claude-cli" ||
     v === "cursor-cloud" ||
     v === "fake" ||
@@ -53,12 +56,16 @@ export function isReviewBackend(v: unknown): v is ReviewBackend {
   );
 }
 
-/** Read env; unset / empty ⇒ null (Live must not invent findings). */
+/**
+ * Read env. Unset / empty ⇒ "worker" (Live Gastown dogfood default:
+ * enqueue job for local Pro Claude worker — do not invent findings).
+ * Invalid values ⇒ null.
+ */
 export function resolveReviewBackend(
   env: NodeJS.ProcessEnv = process.env
 ): ReviewBackend | null {
   const raw = (env.CONTROL_REVIEW_BACKEND ?? "").trim().toLowerCase();
-  if (!raw) return null;
+  if (!raw) return "worker";
   if (isReviewBackend(raw)) return raw;
   return null;
 }
@@ -343,4 +350,15 @@ export function buildCursorCloudStubResult(
 }
 
 export const NO_REVIEW_BACKEND_DETAIL =
-  "No review backend — set CONTROL_REVIEW_BACKEND (claude-cli | cursor-cloud | fake | command).";
+  "No review backend — set CONTROL_REVIEW_BACKEND (worker | claude-cli | cursor-cloud | fake | command).";
+
+/** Agent detail while Live waits for ./scripts/control-review-worker. */
+export const WAITING_FOR_LOCAL_WORKER_DETAIL =
+  "Waiting for local worker (claude Pro).";
+
+/** Failed detail when no worker claims the job in time. */
+export const WORKER_TIMEOUT_DETAIL =
+  "start control-review-worker";
+
+/** Default client poll wait for local worker result (ms). */
+export const DEFAULT_WORKER_WAIT_MS = 180_000;

@@ -1,7 +1,8 @@
 /**
- * V0.7 chip 1 + chip 3 — Auto-kick / manual independent PR review worker.
- * Chip 3: Live invokes scripts/control-review-run (configurable backend);
- * Demo keeps local sim. Fake backend = test-only; Live default is NOT fake.
+ * V0.7 chip 1 + chip 3/3b — Auto-kick / manual independent PR review worker.
+ * Chip 3b: Live default backend=worker (enqueue job; local Pro Claude claims).
+ * Chip 3: opt-in control-review-run backends (command/fake/claude-cli).
+ * Demo keeps local sim. Fake = test-only; Live default is NOT fake.
  * Snapshot UI / GitHub outbox / skill packs = later chips (cut).
  */
 

@@ -39,6 +39,9 @@ import {
 } from "./pr-review-worker";
 import {
   NO_REVIEW_BACKEND_DETAIL,
+  WAITING_FOR_LOCAL_WORKER_DETAIL,
+  WORKER_TIMEOUT_DETAIL,
+  DEFAULT_WORKER_WAIT_MS,
   buildReviewItemFromResult,
   type ControlReviewResultV1,
 } from "./review-contracts";
@@ -812,8 +815,77 @@ export const useControlStore = create<ControlState>()(
           });
         };
 
-        // Live: write job → control-review-run → map result. Never invent findings.
+        // Live: default worker enqueue → poll results; or sync control-review-run.
+        // Never invent findings.
         if (live) {
+          const applyResult = (result: ControlReviewResultV1) => {
+            if (result.status === "error") {
+              landFailed(
+                result.summary?.trim() || "Agent Failed",
+                /not configured|No review backend|start control-review-worker/i.test(
+                  result.summary ?? ""
+                )
+              );
+              return;
+            }
+            const reviewId = uid("rev");
+            const reviewItem = buildReviewItemFromResult({
+              id: reviewId,
+              findingIdPrefix: uid("f"),
+              repo,
+              pr,
+              workstreamId,
+              agentId,
+              result,
+            });
+            landOk(reviewItem);
+          };
+
+          const setWaitingDetail = () => {
+            set({
+              agents: get().agents.map((a) =>
+                a.id === agentId
+                  ? {
+                      ...a,
+                      status: "Running",
+                      detail: WAITING_FOR_LOCAL_WORKER_DETAIL,
+                    }
+                  : a
+              ),
+            });
+          };
+
+          const pollResult = async (jobId: string): Promise<void> => {
+            const waitMs = DEFAULT_WORKER_WAIT_MS;
+            const intervalMs = 2000;
+            const started = Date.now();
+            while (Date.now() - started < waitMs) {
+              await new Promise((r) => window.setTimeout(r, intervalMs));
+              try {
+                const poll = await fetch(
+                  `/api/review/result?job_id=${encodeURIComponent(jobId)}`
+                );
+                const pdata = (await poll.json().catch(() => ({}))) as {
+                  ok?: boolean;
+                  pending?: boolean;
+                  error?: string;
+                  result?: ControlReviewResultV1;
+                };
+                if (pdata.ok && pdata.result && !pdata.pending) {
+                  applyResult(pdata.result);
+                  return;
+                }
+                if (pdata.ok === false && pdata.error && !pdata.pending) {
+                  landFailed(pdata.error);
+                  return;
+                }
+              } catch {
+                // keep waiting — transient poll errors
+              }
+            }
+            landFailed(WORKER_TIMEOUT_DETAIL);
+          };
+
           void (async () => {
             try {
               const res = await fetch("/api/review/run", {
@@ -829,8 +901,11 @@ export const useControlStore = create<ControlState>()(
               });
               const data = (await res.json().catch(() => ({}))) as {
                 ok?: boolean;
+                pending?: boolean;
                 code?: string;
                 error?: string;
+                detail?: string;
+                job?: { job_id?: string };
                 result?: ControlReviewResultV1;
               };
 
@@ -839,6 +914,13 @@ export const useControlStore = create<ControlState>()(
                   data.error?.trim() || NO_REVIEW_BACKEND_DETAIL,
                   true
                 );
+                return;
+              }
+
+              // Worker backend: job on disk, wait for local Pro Claude worker.
+              if (res.ok && data.ok && data.pending && data.job?.job_id) {
+                setWaitingDetail();
+                await pollResult(data.job.job_id);
                 return;
               }
 
@@ -851,26 +933,7 @@ export const useControlStore = create<ControlState>()(
                 return;
               }
 
-              const result = data.result;
-              if (result.status === "error") {
-                landFailed(
-                  result.summary?.trim() || "Agent Failed",
-                  /not configured|No review backend/i.test(result.summary ?? "")
-                );
-                return;
-              }
-
-              const reviewId = uid("rev");
-              const reviewItem = buildReviewItemFromResult({
-                id: reviewId,
-                findingIdPrefix: uid("f"),
-                repo,
-                pr,
-                workstreamId,
-                agentId,
-                result,
-              });
-              landOk(reviewItem);
+              applyResult(data.result);
             } catch (err) {
               landFailed(
                 err instanceof Error ? err.message : "Review runner request failed"
