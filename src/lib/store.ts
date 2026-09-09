@@ -32,10 +32,12 @@ import {
   autoReviewKeyFromRepoPr,
   buildPrReviewAgent,
   buildPrReviewItem,
+  emptyLiveReviewWorkerSlice,
   parseRepoPrFromCoalesceKey,
   prReviewAgentName,
   prReviewSimDelayMs,
   repoPrFromAttention,
+  shouldBlockAutoKick,
   type StartPrReviewWorkerArgs,
 } from "./pr-review-worker";
 import {
@@ -82,7 +84,8 @@ interface ControlState {
   /**
    * Idempotency keys for Live auto-kick PR review workers:
    * auto-review:{coalesceKey} (e.g. auto-review:richardhorvath11/battle-buddy#32).
-   * Cleared on Demo reset so a later Live session can kick again.
+   * Not persisted (control-v0 partialize). Cleared on Demo reset and Demo→Live
+   * wipe; stale keys (no Running wait / no real landed review) allow re-kick.
    */
   autoKickedReviewKeys: string[];
   selectedReviewId: string | null;
@@ -256,12 +259,23 @@ export const useControlStore = create<ControlState>()(
       setMode: (mode) => set({ mode }),
 
       hydrateSeedLiveMode: () => {
-        set({ seedLiveMode: readSeedLiveMode() });
+        const mode = readSeedLiveMode();
+        // Live hydrate: wipe Demo-sim pollution that may still sit in memory
+        // from pre-fix persist (agents/reviewQueue/autoKicked no longer
+        // partialize, but in-session Demo→refresh edge still needs this).
+        if (mode === "live") {
+          set({
+            seedLiveMode: "live",
+            ...emptyLiveReviewWorkerSlice(),
+          });
+        } else {
+          set({ seedLiveMode: mode });
+        }
       },
 
       setSeedLiveMode: (mode) => {
+        const prev = get().seedLiveMode;
         writeSeedLiveMode(mode);
-        set({ seedLiveMode: mode });
         // Optional QA echo — ignore failures (offline / no server).
         void fetch("/api/demo/mode", {
           method: "POST",
@@ -269,13 +283,25 @@ export const useControlStore = create<ControlState>()(
           body: JSON.stringify({ mode }),
         }).catch(() => {});
         if (mode === "demo") {
+          set({ seedLiveMode: "demo" });
           get().resetDemoState();
           return;
         }
-        // Demo→Live: invalidate in-flight Demo sim timers so templated Surface
-        // checks cannot land after the mode flip (epoch guard in Demo path).
+        // Demo→Live (and any non-live → live): wipe agents / reviewQueue /
+        // autoKickedReviewKeys so Demo Surface checks + stale idempotency
+        // keys cannot poison Live Waiting/poll. Hard refresh alone is not
+        // the product fix — Live enter clears pollution.
         reviewWorkerEpoch += 1;
-        // Demo→Live: kick once for review-asks already present, then apply inboxes.
+        autoKickInFlight.clear();
+        if (prev !== "live") {
+          set({
+            seedLiveMode: "live",
+            ...emptyLiveReviewWorkerSlice(),
+          });
+        } else {
+          set({ seedLiveMode: "live" });
+        }
+        // Live enter: kick once for review-asks already present, then apply inboxes.
         get().maybeAutoKickReviewAsks();
         void get().syncExternalInboxes().then(() => {
           get().maybeAutoKickReviewAsks();
@@ -731,21 +757,27 @@ export const useControlStore = create<ControlState>()(
         const idemKey = autoReviewKeyFromRepoPr(repo, pr);
         const agentName = prReviewAgentName(repo, pr);
 
+        const live = get().seedLiveMode === "live";
+
         if (args.source === "auto") {
-          if (get().seedLiveMode !== "live") return;
-          if (
-            get().autoKickedReviewKeys.includes(idemKey) ||
-            autoKickInFlight.has(idemKey)
-          ) {
-            return;
-          }
-          // Do not stack another Running agent for the same repo#PR.
-          if (
-            get().agents.some(
-              (a) => a.name === agentName && a.status === "Running"
-            )
-          ) {
-            return;
+          if (!live) return;
+          const gate = shouldBlockAutoKick({
+            idemKey,
+            agentName,
+            autoKickedReviewKeys: get().autoKickedReviewKeys,
+            autoKickInFlight: autoKickInFlight.has(idemKey),
+            agents: get().agents,
+            reviewQueue: get().reviewQueue,
+          });
+          if (gate.block) return;
+          // Stale autoKicked key (Demo Complete, no Running wait, no real
+          // control.review_result.v1 review) → drop key and allow re-kick.
+          if (gate.reason === "stale_key") {
+            set({
+              autoKickedReviewKeys: get().autoKickedReviewKeys.filter(
+                (k) => k !== idemKey
+              ),
+            });
           }
           autoKickInFlight.add(idemKey);
           set({
@@ -762,6 +794,11 @@ export const useControlStore = create<ControlState>()(
           workstreamId: args.workstreamId,
           source: args.source,
         });
+        // Live: Waiting detail synchronously before fetch so UI never shows
+        // a blank/Demo Complete row while enqueue is in flight.
+        if (live) {
+          newAgent.detail = WAITING_FOR_LOCAL_WORKER_DETAIL;
+        }
 
         set({
           agents: [...get().agents, newAgent],
@@ -775,7 +812,6 @@ export const useControlStore = create<ControlState>()(
         const provenance = args.attentionProvenance;
         const workstreamId = args.workstreamId;
         const source = args.source;
-        const live = get().seedLiveMode === "live";
 
         const stillCurrent = () => {
           if (epoch !== reviewWorkerEpoch) return false;
@@ -1692,12 +1728,13 @@ export const useControlStore = create<ControlState>()(
         focusWorkstreamId: state.focusWorkstreamId,
         workstreams: state.workstreams,
         attention: state.attention,
-        reviewQueue: state.reviewQueue,
-        agents: state.agents,
+        // BUG-W4 3rd pass: do not persist agents / reviewQueue /
+        // autoKickedReviewKeys — Demo Surface checks + stale auto-kick keys
+        // must not survive into Live. Wipe-on-Live-enter is the product fix;
+        // excluding these keeps hard refresh from rehydrating pollution.
         usedDelegationIds: state.usedDelegationIds,
         appliedGithubEventIds: state.appliedGithubEventIds,
         appliedSlackEventIds: state.appliedSlackEventIds,
-        autoKickedReviewKeys: state.autoKickedReviewKeys,
         fyi: state.fyi,
         selectedReviewId: state.selectedReviewId,
         sources: state.sources,

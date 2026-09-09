@@ -25,7 +25,15 @@ import {
 import { interpretLiveReviewRunResponse } from "../src/lib/review-contracts";
 import { enqueueReviewJob } from "../src/lib/invoke-review-runner";
 import { NEEDS_YOU_EXTERNAL_CAP } from "../src/lib/github-constants";
-import { autoReviewKeyFromRepoPr } from "../src/lib/pr-review-worker";
+import {
+  autoReviewKeyFromRepoPr,
+  buildPrReviewItem,
+  emptyLiveReviewWorkerSlice,
+  isDemoSimulatedReviewItem,
+  shouldBlockAutoKick,
+  scrubDemoReviewPollution,
+  prReviewAgentName,
+} from "../src/lib/pr-review-worker";
 
 const ROOT = path.resolve(__dirname, "..");
 const WORKER = path.join(ROOT, "scripts", "control-review-worker");
@@ -93,6 +101,156 @@ assert(
     liveBlock.includes("landFailed(WORKER_TIMEOUT_DETAIL, false)"),
     "timeout lands Failed (not Blocked)"
   );
+  assert(
+    liveBlock.includes("WAITING_FOR_LOCAL_WORKER_DETAIL") ||
+      storeSrc.includes("newAgent.detail = WAITING_FOR_LOCAL_WORKER_DETAIL"),
+    "Live agent sets Waiting detail"
+  );
+}
+
+// BUG-W4 3rd pass: Demo→Live wipe + stale autoKick re-kick + no Surface checks.
+{
+  const storeSrc = fs.readFileSync(path.join(ROOT, "src/lib/store.ts"), "utf8");
+  assert(
+    storeSrc.includes("emptyLiveReviewWorkerSlice"),
+    "store wipes review worker slice on Live enter/hydrate"
+  );
+  assert(
+    /partialize:[\s\S]*usedDelegationIds[\s\S]*appliedGithubEventIds/.test(
+      storeSrc
+    ),
+    "partialize still persists applied ids"
+  );
+  // agents / reviewQueue / autoKickedReviewKeys must NOT appear as persisted fields.
+  const partialMatch = storeSrc.match(/partialize:\s*\(state\)\s*=>\s*\(\{([\s\S]*?)\}\)/);
+  assert(!!partialMatch, "partialize block found");
+  const partialBody = partialMatch![1];
+  assert(
+    !/reviewQueue:\s*state\.reviewQueue/.test(partialBody),
+    "partialize excludes reviewQueue"
+  );
+  assert(
+    !/agents:\s*state\.agents/.test(partialBody),
+    "partialize excludes agents"
+  );
+  assert(
+    !/autoKickedReviewKeys:\s*state\.autoKickedReviewKeys/.test(partialBody),
+    "partialize excludes autoKickedReviewKeys"
+  );
+  assert(
+    storeSrc.includes("newAgent.detail = WAITING_FOR_LOCAL_WORKER_DETAIL"),
+    "Live kick sets Waiting detail synchronously before fetch"
+  );
+  assert(
+    storeSrc.includes("shouldBlockAutoKick"),
+    "Live auto-kick uses shouldBlockAutoKick (stale key re-kick)"
+  );
+  assert(
+    storeSrc.includes("stale_key"),
+    "stale autoKicked key path present"
+  );
+}
+
+{
+  const repo = "richardhorvath11/battle-buddy";
+  const pr = 77;
+  const agentName = prReviewAgentName(repo, pr);
+  const idemKey = autoReviewKeyFromRepoPr(repo, pr);
+  const sim = buildPrReviewItem({
+    id: "rev-sim",
+    findingId: "f-sim",
+    repo,
+    pr,
+    agentId: "agent-sim",
+  });
+  assert(isDemoSimulatedReviewItem(sim), "templated Surface checks detected as Demo-sim");
+  assert(
+    /Surface checks/i.test(sim.findings[0]?.title ?? ""),
+    "sim title is Surface checks"
+  );
+  assert(
+    /Simulated independent review/i.test(sim.findings[0]?.body ?? ""),
+    "sim body is Simulated independent review"
+  );
+
+  const polluted = {
+    agents: [
+      {
+        id: "agent-sim",
+        name: agentName,
+        status: "Complete",
+        reviewItemId: "rev-sim",
+        detail: "Complete — waiting in Review.",
+      },
+    ],
+    reviewQueue: [sim],
+    autoKickedReviewKeys: [idemKey],
+  };
+  const scrubbed = scrubDemoReviewPollution(polluted);
+  assert(scrubbed.reviewQueue.length === 0, "scrub drops Surface checks review");
+  assert(scrubbed.agents.length === 0, "scrub drops Demo Complete agent");
+  assert(
+    scrubbed.autoKickedReviewKeys.length === 0,
+    "scrub drops stale autoKicked key with no Running/real land"
+  );
+
+  const wipe = emptyLiveReviewWorkerSlice();
+  assert(wipe.agents.length === 0, "Live wipe agents empty");
+  assert(wipe.reviewQueue.length === 0, "Live wipe reviews empty");
+  assert(wipe.autoKickedReviewKeys.length === 0, "Live wipe keys empty");
+
+  // Polluted localStorage scenario: key present + Surface checks Complete → re-kick.
+  const gateStale = shouldBlockAutoKick({
+    idemKey,
+    agentName,
+    autoKickedReviewKeys: [idemKey],
+    autoKickInFlight: false,
+    agents: polluted.agents,
+    reviewQueue: polluted.reviewQueue,
+  });
+  // Complete (not Running) + Demo-sim review → must NOT block (stale_key).
+  assert(gateStale.block === false, "stale Demo Complete does not block re-kick");
+  assert(gateStale.reason === "stale_key", "reason stale_key");
+
+  const gateRunning = shouldBlockAutoKick({
+    idemKey,
+    agentName,
+    autoKickedReviewKeys: [idemKey],
+    autoKickInFlight: false,
+    agents: [
+      {
+        id: "a1",
+        name: agentName,
+        status: "Running",
+        detail: WAITING_FOR_LOCAL_WORKER_DETAIL,
+      },
+    ],
+    reviewQueue: [],
+  });
+  assert(gateRunning.block === true, "Running wait_worker blocks re-kick");
+  assert(gateRunning.reason === "running", "reason running");
+
+  const realReview = {
+    ...sim,
+    id: "rev-real",
+    findings: [
+      {
+        title: "Real worker finding",
+        body: "From control.review_result.v1 — not simulated.",
+      },
+    ],
+  };
+  assert(!isDemoSimulatedReviewItem(realReview), "real result not Demo-sim");
+  const gateLanded = shouldBlockAutoKick({
+    idemKey,
+    agentName,
+    autoKickedReviewKeys: [idemKey],
+    autoKickInFlight: false,
+    agents: [],
+    reviewQueue: [realReview],
+  });
+  assert(gateLanded.block === true, "real landed review blocks re-kick");
+  assert(gateLanded.reason === "landed", "reason landed");
 }
 
 // Client interpreter: canonical worker enqueue → wait (not fail-fast).
@@ -243,12 +401,14 @@ JSON
     PATH: `${binDir}:${process.env.PATH || ""}`,
     ANTHROPIC_API_KEY: "should-be-unset-by-worker",
   };
+  try {
   const r = spawnSync(WORKER, ["--once"], {
     encoding: "utf8",
     cwd: ROOT,
     env,
   });
-  unpark();
+  // Keep other jobs parked until after empty --once and noclaude checks so
+  // leftover Live dogfood enqueues cannot steal claims (flaky exit 0 / wrong job).
   assert(
     r.status === 0,
     `worker --once exit 0 (got ${r.status}) stderr=${r.stderr} stdout=${r.stdout}`
@@ -332,6 +492,9 @@ JSON
     fs.rmSync(binDir, { recursive: true, force: true });
   } catch {
     /* ignore */
+  }
+  } finally {
+    unpark();
   }
 
   if (failed > 0) {

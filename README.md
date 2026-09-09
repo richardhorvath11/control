@@ -235,7 +235,7 @@ Monday seed and durable inboxes must not fight. **Not auth** — Setup + sidebar
 | **Demo** | **Load demo** only (not main install/dogfood). Zustand from Monday seed; **ignore** applying github/slack inbox into the UI (APIs still accept watcher POSTs). Banner: `Demo · seeded Monday`. Does **not** wipe `.control/watch.json` channel list. |
 
 - Persist: `localStorage` key **`control-v0-mode`** = `demo` or `live`. If unset and watch configured → **Live**.
-- Zustand persist remains **`control-v0`** (attention, applied ids, etc.).
+- Zustand persist remains **`control-v0`** (attention, applied ids, etc.). Does **not** persist `agents` / `reviewQueue` / `autoKickedReviewKeys` (Demo Surface checks must not poison Live; Live enter also wipes those).
 - **Dogfood**: Live + your watch (Setup / `watch.json`) — not seed.
 - Watchers keep POSTing regardless of mode. Cap `NEEDS_YOU_EXTERNAL_CAP = 5` unchanged. pr-follows / coalesce / checkpoint / auto-kick untouched.
 
@@ -253,11 +253,11 @@ In **Live** mode, when a coalesce-class Needs-you appears (`ext-att-review-*` fr
 
 | | |
 |--|--|
-| Idempotency | `auto-review:{coalesceKey}` persisted in Zustand (`autoKickedReviewKeys`) — refresh / second Slack+GitHub merge does not double-kick |
+| Idempotency | `auto-review:{coalesceKey}` in-memory (`autoKickedReviewKeys`; not persisted across refresh) — Running wait or real landed review blocks double-kick; Demo→Live wipes stale keys |
 | Agent | `Independent review · {repo}#{pr}` · Running → Complete / Failed |
 | Landing | Findings → **Review only** (badge++); **no toast**; Needs-you stays open |
 | Demo | Auto-kick **disabled**; Monday seed + manual Delegate unchanged |
-| Demo reset | Clears `autoKickedReviewKeys` so a later Live session can kick again |
+| Demo reset / Live enter | Clears `autoKickedReviewKeys` + Demo Surface-checks agents/reviews so Live never shows stale Complete sim |
 | Cap | `NEEDS_YOU_EXTERNAL_CAP = 5` unchanged |
 
 ```bash
