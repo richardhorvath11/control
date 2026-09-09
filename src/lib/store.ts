@@ -44,6 +44,7 @@ import {
   WORKER_TIMEOUT_DETAIL,
   DEFAULT_WORKER_WAIT_MS,
   buildReviewItemFromResult,
+  interpretLiveReviewRunResponse,
   type ControlReviewResultV1,
 } from "./review-contracts";
 
@@ -271,6 +272,9 @@ export const useControlStore = create<ControlState>()(
           get().resetDemoState();
           return;
         }
+        // Demo→Live: invalidate in-flight Demo sim timers so templated Surface
+        // checks cannot land after the mode flip (epoch guard in Demo path).
+        reviewWorkerEpoch += 1;
         // Demo→Live: kick once for review-asks already present, then apply inboxes.
         get().maybeAutoKickReviewAsks();
         void get().syncExternalInboxes().then(() => {
@@ -923,9 +927,9 @@ export const useControlStore = create<ControlState>()(
                 // keep waiting — transient poll errors
               }
             }
-            // BUG-W4a: timeout with no result → Failed/Blocked + worker copy (never
-            // "Review runner failed"; never map templated Surface checks).
-            landFailed(WORKER_TIMEOUT_DETAIL, true);
+            // BUG-W4a: timeout with no result → Failed + worker copy (never
+            // fail-fast runner copy; never map templated Surface checks).
+            landFailed(WORKER_TIMEOUT_DETAIL, false);
           };
 
           void (async () => {
@@ -947,60 +951,43 @@ export const useControlStore = create<ControlState>()(
                 code?: string;
                 error?: string;
                 detail?: string;
-                backend?: string;
-                job?: { job_id?: string };
-                result?: ControlReviewResultV1;
+                backend?: string | null;
+                job?: { job_id?: string } | null;
+                job_id?: string;
+                result?: ControlReviewResultV1 | null;
               };
 
-              if (res.status === 503 || data.code === "NO_BACKEND") {
-                landFailed(
-                  data.error?.trim() || NO_REVIEW_BACKEND_DETAIL,
-                  true
-                );
+              const decision = interpretLiveReviewRunResponse(
+                res.ok,
+                res.status,
+                data
+              );
+
+              if (decision.action === "no_backend") {
+                landFailed(decision.detail, true);
                 return;
               }
 
-              const workerPending =
-                data.pending === true ||
-                data.backend === "worker" ||
-                (typeof data.detail === "string" &&
-                  /local worker|control-review-worker/i.test(data.detail));
-
-              // Worker backend: job on disk, wait for local Pro Claude worker.
-              if (res.ok && data.ok && workerPending) {
-                const jobId = data.job?.job_id;
-                if (!jobId) {
-                  landFailed(WORKER_TIMEOUT_DETAIL, true);
-                  return;
-                }
+              // Worker enqueue (default Live backend): Waiting → poll. Never
+              // treat pending/ok-without-result as fail-fast (forbidden).
+              if (decision.action === "wait_worker") {
                 setWaitingDetail();
-                await pollResult(jobId);
+                await pollResult(decision.jobId);
                 return;
               }
 
-              if (!res.ok || !data.ok || !data.result) {
-                // BUG-W4a: never surface "Review runner failed" for the worker path.
-                const workerHint =
-                  data.backend === "worker" ||
-                  data.pending === true ||
-                  /control-review-worker|local worker/i.test(
-                    `${data.error ?? ""} ${data.detail ?? ""}`
-                  );
-                landFailed(
-                  data.error?.trim() ||
-                    data.result?.summary?.trim() ||
-                    (workerHint
-                      ? WORKER_TIMEOUT_DETAIL
-                      : "Review runner failed"),
-                  workerHint
-                );
+              if (decision.action === "apply_result") {
+                applyResult(decision.result);
                 return;
               }
 
-              applyResult(data.result);
+              // fail — Live never uses the old fail-fast runner copy.
+              landFailed(decision.detail, decision.blocked);
             } catch (err) {
               landFailed(
-                err instanceof Error ? err.message : "Review runner request failed"
+                err instanceof Error
+                  ? err.message
+                  : "Review runner request failed"
               );
             }
           })();

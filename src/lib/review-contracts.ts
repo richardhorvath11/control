@@ -362,3 +362,96 @@ export const WORKER_TIMEOUT_DETAIL =
 
 /** Default client poll wait for local worker result (ms). */
 export const DEFAULT_WORKER_WAIT_MS = 180_000;
+
+
+/** POST /api/review/run body as seen by the Live browser client. */
+export type LiveReviewRunResponse = {
+  ok?: boolean;
+  pending?: boolean;
+  code?: string;
+  error?: string;
+  detail?: string;
+  backend?: string | null;
+  job?: { job_id?: string } | null;
+  /** Tolerate top-level job_id if present. */
+  job_id?: string;
+  result?: ControlReviewResultV1 | null;
+};
+
+export type LiveReviewRunDecision =
+  | { action: "no_backend"; detail: string }
+  | { action: "wait_worker"; jobId: string }
+  | { action: "apply_result"; result: ControlReviewResultV1 }
+  | { action: "fail"; detail: string; blocked: boolean };
+
+/**
+ * Interpret POST /api/review/run for the Live client kick path.
+ * Live default backend is worker: successful enqueue (job on disk, no sync result)
+ * must enter wait/poll — never fail-fast runner copy, never Demo sim findings.
+ */
+export function interpretLiveReviewRunResponse(
+  httpOk: boolean,
+  httpStatus: number,
+  data: LiveReviewRunResponse
+): LiveReviewRunDecision {
+  if (httpStatus === 503 || data.code === "NO_BACKEND") {
+    return {
+      action: "no_backend",
+      detail: (data.error ?? "").trim() || NO_REVIEW_BACKEND_DETAIL,
+    };
+  }
+
+  const jobId =
+    (typeof data.job?.job_id === "string" && data.job.job_id.trim()) ||
+    (typeof data.job_id === "string" && data.job_id.trim()) ||
+    "";
+
+  const backendWorker = data.backend === "worker";
+  const pendingFlag = data.pending === true;
+  const detailMentionsWorker =
+    typeof data.detail === "string" &&
+    /local worker|control-review-worker/i.test(data.detail);
+  const textMentionsWorker = /control-review-worker|local worker/i.test(
+    `${data.error ?? ""} ${data.detail ?? ""}`
+  );
+
+  const workerShaped =
+    pendingFlag || backendWorker || detailMentionsWorker || textMentionsWorker;
+
+  // Enqueue success: ok + job + no usable sync result ⇒ wait (do not require
+  // perfect pending detection — residual BUG-W4 fell through to fail-fast).
+  const syncResult =
+    data.result && data.pending !== true ? data.result : null;
+
+  if (jobId && !syncResult) {
+    if (
+      workerShaped ||
+      (httpOk && data.ok === true) ||
+      (httpOk && pendingFlag) ||
+      (httpOk && backendWorker)
+    ) {
+      return { action: "wait_worker", jobId };
+    }
+  }
+
+  // Soft shapes: worker flags without ok, but we still have a job id.
+  if (jobId && workerShaped && !syncResult) {
+    return { action: "wait_worker", jobId };
+  }
+
+  if (httpOk && data.ok && syncResult) {
+    return { action: "apply_result", result: syncResult };
+  }
+
+  // Live path: never surface the old fail-fast runner copy — worker is the default.
+  const detail =
+    (data.error ?? "").trim() ||
+    (data.result?.summary ?? "").trim() ||
+    WORKER_TIMEOUT_DETAIL;
+
+  return {
+    action: "fail",
+    detail,
+    blocked: workerShaped || httpStatus >= 500,
+  };
+}
