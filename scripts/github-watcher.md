@@ -139,3 +139,16 @@ See `scripts/slack-watch.md` and `scripts/slack-pr-inbox-post.sh`. Control holds
 ## Out of chip
 
 Org-wide / multi-repo watch, webhooks-in-Control, fuzzy NLP without URL, Seed/Live (chip 5), infinite follows, raising external Needs-you cap, full checkpoint rewrite, CI↔review coalesce.
+
+## Watcher status (V0.8 chip 5)
+
+After each tick, PUT:
+
+```bash
+curl -sS -X PUT "${CONTROL_BASE_URL:-http://localhost:3000}/api/watchers/status" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"github-watch","status":"ticking","last_action":"diffed primary + follows"}'
+```
+
+Never open `.control/watcher-status.json` from the watcher — HTTP only.
+

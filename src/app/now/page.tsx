@@ -111,6 +111,29 @@ function OpenSourceLinks({
   );
 }
 
+
+async function muteSlackThread(item: AttentionItem): Promise<boolean> {
+  const channelId = item.slackChannelId;
+  if (!channelId) return false;
+  const threadTs = item.slackThreadTs || item.slackMessageTs;
+  const messageTs = item.slackMessageTs;
+  if (!threadTs && !messageTs) return false;
+  try {
+    const res = await fetch("/api/slack/mutes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        channel_id: channelId,
+        thread_ts: threadTs,
+        message_ts: messageTs,
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 function MorningNow() {
   const router = useRouter();
   const workstreams = useControlStore((s) => s.workstreams);
@@ -127,6 +150,17 @@ function MorningNow() {
   const startSlackDraftWorker = useControlStore((s) => s.startSlackDraftWorker);
   const resolveAttention = useControlStore((s) => s.resolveAttention);
   const [fyiOpen, setFyiOpen] = useState(false);
+  const [mutingId, setMutingId] = useState<string | null>(null);
+
+  const onMuteThread = async (item: AttentionItem) => {
+    setMutingId(item.id);
+    try {
+      const ok = await muteSlackThread(item);
+      if (ok) resolveAttention(item.id);
+    } finally {
+      setMutingId(null);
+    }
+  };
   /** Cap-demoted + native FYI attention — keep provenance / Open source (E2E-1). */
   const fyiAttention = useMemo(
     () =>
@@ -268,6 +302,20 @@ function MorningNow() {
                           : "Open source"}
                       </Link>
                     )}
+                    {item.origin === "slack" &&
+                      !item.coalesceKey &&
+                      item.slackChannelId &&
+                      (item.slackThreadTs || item.slackMessageTs) && (
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          disabled={mutingId === item.id}
+                          onClick={() => void onMuteThread(item)}
+                          title="Mute this Slack thread (7d snooze) — no new Needs-you"
+                        >
+                          {mutingId === item.id ? "Muting…" : "Mute thread"}
+                        </button>
+                      )}
                     <button
                       type="button"
                       className="btn-ghost"

@@ -16,6 +16,9 @@
 #   CONTROL_BASE_URL   default http://localhost:3000
 #   POLL_SECONDS       default 5 (watch mode)
 #   DRY_RUN=1          same as --dry-run
+#
+# V0.8 chip 5: PUT /api/watchers/status id=github-outbox on tick
+# (Agents board). HTTP only — never open .control/.
 set -euo pipefail
 
 CONTROL_BASE_URL="${CONTROL_BASE_URL:-http://localhost:3000}"

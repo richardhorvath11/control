@@ -9,24 +9,31 @@ type StatusPayload = {
     repo: string;
     pr: number;
     slackChannelCount?: number;
+    surfaceCount?: number;
+    includeDms?: boolean;
+    includeMpims?: boolean;
   };
   activeFollowCount?: number;
 };
 
 /**
- * Visible chip: Demo · seeded Monday | Live · {repo} + {n} Slack channels (+ follows).
+ * Visible chip: Demo · seeded Monday | Live · {repo} · {n} channels [· DMs] [· MPIMs]
  */
 export function ModeBanner() {
   const seedLiveMode = useControlStore((s) => s.seedLiveMode);
   const hydrated = useControlStore((s) => s._hasHydrated);
   const [repoLabel, setRepoLabel] = useState<string | null>(null);
-  const [channelCount, setChannelCount] = useState(0);
+  const [surfaceCount, setSurfaceCount] = useState(0);
+  const [includeDms, setIncludeDms] = useState(false);
+  const [includeMpims, setIncludeMpims] = useState(false);
   const [followCount, setFollowCount] = useState(0);
 
   useEffect(() => {
     if (!hydrated || seedLiveMode !== "live") {
       setRepoLabel(null);
-      setChannelCount(0);
+      setSurfaceCount(0);
+      setIncludeDms(false);
+      setIncludeMpims(false);
       setFollowCount(0);
       return;
     }
@@ -38,11 +45,15 @@ export function ModeBanner() {
         const data = (await res.json()) as StatusPayload;
         if (cancelled || !data.watch) return;
         setRepoLabel(data.watch.repo);
-        setChannelCount(
-          typeof data.watch.slackChannelCount === "number"
-            ? data.watch.slackChannelCount
-            : 0
-        );
+        const n =
+          typeof data.watch.surfaceCount === "number"
+            ? data.watch.surfaceCount
+            : typeof data.watch.slackChannelCount === "number"
+              ? data.watch.slackChannelCount
+              : 0;
+        setSurfaceCount(n);
+        setIncludeDms(data.watch.includeDms === true);
+        setIncludeMpims(data.watch.includeMpims === true);
         setFollowCount(
           typeof data.activeFollowCount === "number" ? data.activeFollowCount : 0
         );
@@ -76,17 +87,17 @@ export function ModeBanner() {
     );
   }
 
-  const n = channelCount;
+  const n = surfaceCount;
   return (
     <div
       className="border-b border-border bg-raised/80 px-4 py-1.5 flex items-center gap-2 text-[12px]"
       data-mode="live"
+      data-testid="live-banner"
     >
       <span className="chip border-running/40 text-running">
-        Live · {repoLabel ?? "…"}
-      </span>
-      <span className="text-muted tabular-nums">
-        {n} Slack channel{n === 1 ? "" : "s"}
+        Live · {repoLabel ?? "…"} · {n} channel{n === 1 ? "" : "s"}
+        {includeDms ? " · DMs" : ""}
+        {includeMpims ? " · MPIMs" : ""}
       </span>
       <span className="text-muted tabular-nums">
         · {followCount} follow{followCount === 1 ? "" : "s"}

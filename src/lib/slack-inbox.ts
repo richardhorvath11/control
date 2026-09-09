@@ -22,6 +22,7 @@ import {
   slackMessageAttentionId,
   slackMessageAttentionTitle,
 } from "./slack-actionability";
+import { isSlackThreadMuted } from "./slack-mutes";
 
 export const SLACK_INBOX_DIR = path.join(CONTROL_DIR, "slack-inbox");
 
@@ -134,6 +135,8 @@ export interface SlackRoutingEffects {
   capped?: boolean;
   ignored?: boolean;
   ignoreReason?: string;
+  /** V0.8 chip 5: thread muted — event may still store; no Needs-you. */
+  muted?: boolean;
 }
 
 export interface StoredSlackInboxItem {
@@ -421,7 +424,8 @@ export function validateSlackInboxEvent(
 
 export function routeSlackMessageEvent(
   event: SlackMessageInboxEvent,
-  watch: WatchConfig
+  watch: WatchConfig,
+  opts?: { muted?: boolean }
 ): SlackRoutingEffects {
   const gate = isSlackChannelAllowlisted(
     watch,
@@ -438,6 +442,18 @@ export function routeSlackMessageEvent(
       newWorkstream: null,
       ignored: true,
       ignoreReason: `channel_id ${event.channel_id} (${event.channel_kind}) not allowlisted [surfaces=${surfaceIds}; includeDms=${watch.slackWatch.includeDms}; includeMpims=${watch.slackWatch.includeMpims}]`,
+    };
+  }
+
+  // V0.8 chip 5: muted thread → store OK, no Needs-you (re-POSTs in thread suppressed).
+  if (opts?.muted) {
+    return {
+      attention: null,
+      fyiLine: null,
+      workstreamPatch: null,
+      newWorkstream: null,
+      capped: false,
+      muted: true,
     };
   }
 
@@ -727,6 +743,7 @@ export function findSlackDedupeMatch(
  * Accept a Slack inbox event (pr_link | message). No Slack token in Control.
  * Wrong channel / wrong repo / prLinks:false → stored applied=false (ignored).
  * message: durable store; chip 3 may create Needs-you when actionable.
+ * Chip 5: muted thread root → no Needs-you (event may still store).
  */
 export async function acceptSlackInboxEvent(
   event: SlackInboxEvent
@@ -763,7 +780,17 @@ export async function acceptSlackInboxEvent(
     return { item, duplicate: true, applied: false };
   }
 
-  const effects = routeSlackEvent(event, watch);
+  let effects: SlackRoutingEffects;
+  if (event.type === "message") {
+    const threadRoot =
+      typeof event.thread_ts === "string" && event.thread_ts.trim()
+        ? event.thread_ts.trim()
+        : event.message_ts;
+    const muted = await isSlackThreadMuted(event.channel_id, threadRoot);
+    effects = routeSlackMessageEvent(event, watch, { muted });
+  } else {
+    effects = routeSlackEvent(event, watch);
+  }
 
   if (effects.ignored) {
     const item: StoredSlackInboxItem = {

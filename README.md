@@ -1,4 +1,4 @@
-# Control — V0.8 (chip 4: Draft reply → Review → outbox)
+# Control — V0.8 (chip 5: BYO UX + mute + Agents watcher board)
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
 
@@ -298,7 +298,7 @@ Monday seed and durable inboxes must not fight. **Not auth** — Setup + sidebar
 
 | Mode | Boot / Now |
 |------|------------|
-| **Live** | Default when watch is **configured** (repo + ≥1 Slack channel) and no saved mode preference. **Apply** durable inboxes on load/poll. Banner: `Live · {repo}` + `{n} Slack channels` (+ follows). |
+| **Live** | Default when watch is **configured** (repo + ≥1 surface or include DMs/MPIMs) and no saved mode preference. **Apply** durable inboxes on load/poll. Banner: `Live · {repo} · {n} channels` (+ optional `· DMs` / `· MPIMs`) (+ follows). |
 | **Demo** | **Load demo** only (not main install/dogfood). Zustand from Monday seed; **ignore** applying github/slack inbox into the UI (APIs still accept watcher POSTs). Banner: `Demo · seeded Monday`. Does **not** wipe `.control/watch.json` channel list. |
 
 - Persist: `localStorage` key **`control-v0-mode`** = `demo` or `live`. If unset and watch configured → **Live**.
@@ -565,7 +565,7 @@ Agent reads `watch.slackWatch` surfaces (+ optional DMs/MPIMs; cursor per surfac
 
 Curls `POST /api/slack/inbox`. No Slack token in repo or Control. No org-wide Slack. See `scripts/slack-watch.md`.
 
-Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, infinite follows, raising external Needs-you cap, full checkpoint rewrite, CI↔review coalesce, auth / multi-tenant, Claude draft (chip 4), Agents board (chip 5).
+Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, infinite follows, raising external Needs-you cap, full checkpoint rewrite, CI↔review coalesce, auth / multi-tenant. **V0.8 chip 5 shipped:** BYO surfaces UI, mute, Agents watcher board.
 
 ## Stack assumptions
 
@@ -591,8 +591,10 @@ Workstreams: Staging credential rotation (human review), Search ranking experime
 | `/workstreams/[id]` | Detail + checkpoint |
 | `/review` | Queue + workspace |
 | `/agents` | Status board |
-| `/settings` | BYO Live setup (repo, teams, multi Slack channels → `watch.json`) |
-| `GET/PUT /api/watch` | Read/write normalized multi-channel watch config |
+| `/settings` · `/setup` | BYO Live setup (repo, optional pr, teams, slackWatch surfaces → via `PUT /api/watch`) |
+| `GET/PUT /api/watch` | Read/write normalized slackWatch config (no restart) |
+| `GET/POST/DELETE /api/slack/mutes` | Mute / snooze Slack threads (server `.control/slack-mutes.json`; opaque) |
+| `GET/PUT /api/watchers/status` | Agents watcher board (server `.control/watcher-status.json`; opaque) |
 | `/source/slack/[id]` | Mocked Slack thread (+ harness link) |
 | `/source/github/[id]` | Mocked PR + CI + diff |
 | `/source/rfc/[id]` | Mocked RFC section |
@@ -611,7 +613,7 @@ Workstreams: Staging credential rotation (human review), Search ranking experime
 | `GET/POST /api/slack/inbox` | Durable Slack PR-link inbox (watcher → Control) |
 | `POST /api/demo/reset` | Clear demo persist instruction; optional `clearInboxes=true` (keeps watch.json / pr-follows) |
 | `GET/POST /api/demo/mode` | Optional QA mode echo (`demo` or `live`); client key `control-v0-mode` |
-| `GET /api/demo/status` | Watch repo + Slack channel count + follows for Live banner |
+| `GET /api/demo/status` | Watch repo + surface count + DMs/MPIMs + follows for Live banner |
 | `POST /api/slack/outbox/:id/ack` | Mark posted after MCP send |
 | `POST /api/slack/outbox/:id/fail` | Mark failed |
 | `POST /api/github/outbox/:id/ack` | Mark posted after gh comment |
@@ -630,9 +632,50 @@ Command palette (⌘K) opens the launcher (not chat). Includes **Open Live setup
 6. Approve/edit Slack draft with explicit confirm -> outbox queue -> MCP poster -> ack.
 7. On a Live PR Review: Draft comment -> confirm -> `POST /api/github/outbox` -> `./scripts/github-outbox-worker` -> ack.
 8. Return to Now — checkpoint updated.
+9. Setup → add/remove a Slack surface → Live banner count updates.
+10. Mute a Slack Needs-you thread → re-POST same thread → no new Needs-you.
+11. Agents → watchers board reflects `PUT /api/watchers/status`.
+
+
+## V0.8 chip 5 — BYO UX + mute + Agents board
+
+### Dogfood path
+
+1. **Setup UI** (`/settings` or `/setup`) — edit `repo`, optional `pr`, `teams`, `slackWatch.surfaces` (add/remove id+name+kind+prLinks), `includeDms` / `includeMpims` / `myUserId`. **Save watch** → `PUT /api/watch`. No restart. `GET /api/watch` reflects immediately.
+2. **Live banner** — `Live · {repo} · {n} channels` (+ `· DMs` / `· MPIMs` when enabled).
+3. **MCP Slack watcher** + **`./scripts/control-review-worker`** + Slack/GitHub **outbox posters** (HTTP only) — dogfood as before. Each should **`PUT /api/watchers/status`** on tick:
+   ```bash
+   curl -sS -X PUT "$CONTROL_BASE_URL/api/watchers/status" \
+     -H 'Content-Type: application/json' \
+     -d '{"id":"slack-watch","status":"ticking","last_action":"polled 2 surfaces"}'
+   ```
+   Known ids: `slack-watch` · `github-watch` · `review-worker` · `slack-outbox` · `github-outbox`. Status: `idle|ticking|waiting|error`. Stale if `updated_at` > ~3 min → board shows idle/stale.
+4. **Mute thread** on a Slack message Needs-you → `POST /api/slack/mutes` (default 7d snooze). Re-POSTs in that thread root create **no** new Needs-you (event may still store). Unmute (`DELETE /api/slack/mutes`) or expiry restores Needs-you.
+5. **Agents** (`/agents`) — Watchers table (Name · Status · Last tick · Last action) from `GET /api/watchers/status`. Empty seed OK (known ids show idle).
+
+**Locked:** `NEEDS_YOU_EXTERNAL_CAP=5` · no tokens in Control · `.control/` paths never in client bundles · no CloudAgent · chips 1–4 unchanged (opaque worker APIs, slackWatch, actionability, slack_draft).
+
+### Mute API
+
+| | |
+|--|--|
+| `GET /api/slack/mutes` | Active mutes |
+| `POST /api/slack/mutes` | `{ channel_id, thread_ts?, message_ts?, expires_at? }` → 201 |
+| `DELETE /api/slack/mutes` | `?key=` or `{ key }` where key = `channel_id\|thread_root_ts` |
+
+Mute key = `channel_id` + (`thread_ts` \|\| `message_ts`) so thread replies share one mute.
+
+### Watcher status API
+
+| | |
+|--|--|
+| `GET /api/watchers/status` | Board rows (known ids seeded idle) |
+| `PUT /api/watchers/status` | `{ id, status, last_action, detail? }` |
+
+Never tell clients/workers to open `.control/watcher-status.json`.
 
 ## Explicit cuts
 
-Agents board (V0.8 chip 5) · auto-send · urgency ML · org-wide · prompt library / skill pack · fake drafts on Live · FYI firehose for non-actionable Slack · inventing thread history.
+Auto-send · urgency ML · org-wide · prompt library / skill pack · fake drafts on Live · FYI firehose for non-actionable Slack · inventing thread history · exposing raw `.control/` to workers.
 
 Team surface, auth, org-wide GitHub / org-wide Slack, channels without PR-URL filter, webhooks-in-Control, NLP without URL, live Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological feed, agent builder / free-form prompt, watch.autoReview policy, model-agnostic runner, Team/Mac/chat-home, baking seed as default dogfood, auto-merge, lorem, auto-send without confirm, Slack app / bot-token inside Next, GitHub App / PAT inside Control, raising external Needs-you cap without product call, multi-repo outbox UI, full IDE diff / Monaco / merge button, APPROVE/REQUEST_CHANGES review events from outbox (v1 comment-only).

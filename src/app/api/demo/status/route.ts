@@ -33,6 +33,10 @@ export async function GET() {
     }
     const watch = await ensureWatchConfig();
     const follows = purgeExpiredFollows((await readPrFollows()).follows);
+    const n = watch.slackWatch.surfaces.length;
+    let liveLabel = `Live · ${watch.repo} · ${n} channel${n === 1 ? "" : "s"}`;
+    if (watch.slackWatch.includeDms) liveLabel += " · DMs";
+    if (watch.slackWatch.includeMpims) liveLabel += " · MPIMs";
     return NextResponse.json({
       ok: true,
       mode: serverMode,
@@ -42,16 +46,15 @@ export async function GET() {
         pr: watch.pr,
         workstreamId: watch.workstreamId,
         slackWatch: watch.slackWatch,
-        slackChannelCount: watch.slackWatch.surfaces.length,
-        surfaceCount: watch.slackWatch.surfaces.length,
+        slackChannelCount: n,
+        surfaceCount: n,
+        includeDms: watch.slackWatch.includeDms === true,
+        includeMpims: watch.slackWatch.includeMpims === true,
         configured: isWatchConfigured(watch),
       },
       activeFollowCount: follows.length,
       needsYouCap: NEEDS_YOU_EXTERNAL_CAP,
-      label:
-        serverMode === "live"
-          ? `Live · ${watch.repo} · ${watch.slackWatch.surfaces.length} Slack surfaces`
-          : "Demo · seeded Monday",
+      label: serverMode === "live" ? liveLabel : "Demo · seeded Monday",
     });
   } catch (err) {
     const message =

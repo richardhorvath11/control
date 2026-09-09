@@ -14,7 +14,11 @@
  * Runs: env -u ANTHROPIC_API_KEY claude -p "…"  (no --bare).
  *
  * Exit: 0 ok · 1 no pending (--once) · 2 retryable · 3 parse · 4 claude missing
+ *
+ * V0.8 chip 5: optionally PUT /api/watchers/status with id=review-worker on
+ * claim/tick (Agents board). HTTP only — never open .control/.
  */
+
 
 import { spawn, spawnSync } from "child_process";
 import fs from "fs";

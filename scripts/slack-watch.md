@@ -89,6 +89,22 @@ curl -sS -X POST "${CONTROL_BASE_URL:-http://localhost:3000}/api/slack/inbox" \
 
 Allowed channel → **201** stored. Chip 3 rules (first match): DM/MPIM → Needs-you; `@me` / `mentions_me` → Needs-you; `thread_ts` + `thread_participated:true` → Needs-you; short IM `?` → Needs-you; else ignore (no FYI). Cap `NEEDS_YOU_EXTERNAL_CAP=5`. Unknown channel → ignored / 4xx. Dedupe `(channel_id, message_ts)`.
 
+## Watcher status (V0.8 chip 5)
+
+After each poll tick, PUT status (HTTP only — never open `.control/`):
+
+```bash
+curl -sS -X PUT "${CONTROL_BASE_URL:-http://localhost:3000}/api/watchers/status" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"slack-watch","status":"ticking","last_action":"polled surfaces"}'
+```
+
+On quiet/idle: `status: "idle"`. On error: `status: "error"`. Agents board reads `GET /api/watchers/status`.
+
+## Mute (chip 5)
+
+Muted thread roots skip Needs-you on `message` ingest (`POST /api/slack/mutes`). Key = `channel_id|thread_root_ts`.
+
 ## Cuts
 
-Agents board (chip 5) · auto-send · urgency ML · org-wide · FYI firehose · inventing thread history · Slack token / skill pack in Control. Chip 4 Draft reply ships via review job APIs.
+Auto-send · urgency ML · org-wide · FYI firehose · inventing thread history · Slack token / skill pack in Control · exposing raw `.control/` to workers.
