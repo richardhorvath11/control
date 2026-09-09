@@ -75,6 +75,14 @@ export interface AttentionItem {
   githubDedupeKey?: string;
   slackEventId?: string;
   slackDedupeKey?: string;
+  /** Chip 4: inbound Slack message fields for Draft reply → slack_draft job. */
+  slackChannelId?: string;
+  slackChannelKind?: "channel" | "im" | "mpim";
+  slackMessageTs?: string;
+  /** Parent thread_ts for reply; defaults to message_ts when top-level. */
+  slackThreadTs?: string;
+  slackPermalink?: string;
+  slackTextExcerpt?: string;
 }
 
 export interface Finding {
@@ -120,6 +128,8 @@ export interface ReviewItem {
   slackTarget?: SlackTarget;
   /** Optional provenance pointing at the harness / mock source. */
   provenance?: Provenance[];
+  /** Chip 4: attention id that spawned this slack_draft (Needs-you stays until Approve/Dismiss). */
+  attentionId?: string;
   /** Filled after MCP poster acks the outbox item. */
   postedReply?: PostedSlackReply;
   /** Durable outbox id while awaiting Slack MCP poster. */

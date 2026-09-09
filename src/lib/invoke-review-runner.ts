@@ -21,13 +21,20 @@ import {
 
 export type InvokeReviewRunnerInput = {
   job_id?: string;
-  repo: string;
-  pr: number;
+  kind?: "pr_review" | "slack_draft";
+  repo?: string;
+  pr?: number;
   head_sha?: string;
   workstream_id?: string;
   attention_id?: string;
   provenance?: unknown[];
   snapshot_path?: string;
+  /** slack_draft */
+  channel_id?: string;
+  thread_ts?: string;
+  message_ts?: string;
+  permalink?: string;
+  text_excerpt?: string;
 };
 
 export type InvokeReviewRunnerOutcome =
@@ -66,18 +73,56 @@ export type InvokeReviewRunnerOutcome =
     };
 
 function buildJob(input: InvokeReviewRunnerInput): ControlReviewJobV1 | null {
+  const kind =
+    input.kind === "slack_draft"
+      ? "slack_draft"
+      : input.kind === "pr_review"
+        ? "pr_review"
+        : input.channel_id?.trim() && !input.repo?.trim()
+          ? "slack_draft"
+          : "pr_review";
+
+  if (kind === "slack_draft") {
+    const channel_id = (input.channel_id ?? "").trim();
+    const message_ts = (input.message_ts ?? "").trim();
+    if (!channel_id || !message_ts) return null;
+    const thread_ts =
+      (input.thread_ts ?? "").trim() || message_ts;
+    const job: ControlReviewJobV1 = {
+      schema: REVIEW_JOB_SCHEMA,
+      job_id: input.job_id?.trim() || newReviewJobId(),
+      kind: "slack_draft",
+      channel_id,
+      message_ts,
+      thread_ts,
+      provenance: input.provenance ?? [],
+    };
+    if (input.attention_id?.trim()) job.attention_id = input.attention_id.trim();
+    if (input.permalink?.trim()) job.permalink = input.permalink.trim();
+    if (typeof input.text_excerpt === "string") {
+      job.text_excerpt = input.text_excerpt;
+    }
+    if (input.workstream_id?.trim()) {
+      job.workstream_id = input.workstream_id.trim();
+    }
+    return job;
+  }
+
+  const repo = (input.repo ?? "").trim();
+  const pr = Math.trunc(input.pr ?? 0);
+  if (!repo || !Number.isFinite(pr) || pr <= 0) return null;
   const job: ControlReviewJobV1 = {
     schema: REVIEW_JOB_SCHEMA,
     job_id: input.job_id?.trim() || newReviewJobId(),
-    repo: input.repo.trim(),
-    pr: Math.trunc(input.pr),
+    kind: "pr_review",
+    repo,
+    pr,
     provenance: input.provenance ?? [],
   };
   if (input.head_sha?.trim()) job.head_sha = input.head_sha.trim();
   if (input.workstream_id?.trim()) job.workstream_id = input.workstream_id.trim();
   if (input.attention_id?.trim()) job.attention_id = input.attention_id.trim();
   if (input.snapshot_path?.trim()) job.snapshot_path = input.snapshot_path.trim();
-  if (!job.repo || !Number.isFinite(job.pr) || job.pr <= 0) return null;
   return job;
 }
 
@@ -85,7 +130,9 @@ function buildJob(input: InvokeReviewRunnerInput): ControlReviewJobV1 | null {
 async function withPreferredSnapshot(
   job: ControlReviewJobV1
 ): Promise<ControlReviewJobV1> {
+  if (job.kind === "slack_draft") return job;
   if (job.snapshot_path?.trim()) return job;
+  if (!job.repo || !job.pr) return job;
   const preferred = await preferSnapshotPath(job.repo, job.pr);
   if (preferred) return { ...job, snapshot_path: preferred };
   return job;
@@ -106,7 +153,7 @@ export async function enqueueReviewJob(
 > {
   const built = buildJob(input);
   if (!built) {
-    return { ok: false, code: "BAD_JOB", error: "repo and positive pr required" };
+    return { ok: false, code: "BAD_JOB", error: "invalid review job (repo+pr or slack_draft fields required)" };
   }
   const job = await withPreferredSnapshot(built);
   const jobPath = await writeReviewJob(job);
@@ -150,7 +197,7 @@ export async function invokeReviewRunner(
 
   const built = buildJob(input);
   if (!built) {
-    return { ok: false, code: "BAD_JOB", error: "repo and positive pr required" };
+    return { ok: false, code: "BAD_JOB", error: "invalid review job (repo+pr or slack_draft fields required)" };
   }
   const job = await withPreferredSnapshot(built);
 

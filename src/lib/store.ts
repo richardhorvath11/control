@@ -41,14 +41,25 @@ import {
   type StartPrReviewWorkerArgs,
 } from "./pr-review-worker";
 import {
+  autoDraftIdempotencyKey,
+  buildSlackDraftAgent,
+  channelLabelFromAttention,
+  isAutoDraftEligible,
+  isSlackMessageNeedsYou,
+  shouldBlockAutoDraft,
+  type StartSlackDraftWorkerArgs,
+} from "./slack-draft-worker";
+import {
   NO_REVIEW_BACKEND_DETAIL,
   WAITING_FOR_LOCAL_WORKER_DETAIL,
   WORKER_TIMEOUT_DETAIL,
   DEFAULT_WORKER_WAIT_MS,
   buildReviewItemFromResult,
+  buildSlackDraftReviewItemFromResult,
   interpretLiveReviewRunResponse,
   type ControlReviewResultV1,
 } from "./review-contracts";
+import { SLACK_E2E } from "./slack-e2e";
 
 const initial = seed as SeedData;
 
@@ -198,6 +209,14 @@ interface ControlState {
   startPrReviewWorker: (args: StartPrReviewWorkerArgs) => void;
   /** Live: auto-kick once per coalesce-class Needs-you not yet in autoKickedReviewKeys. */
   maybeAutoKickReviewAsks: () => void;
+  /**
+   * Chip 4: Draft reply for origin:slack message Needs-you.
+   * Live: enqueue slack_draft job → poll → Review. Never invent draft_text.
+   * Does NOT resolve Needs-you (prep ≠ done). Demo: no auto; no invented drafts.
+   */
+  startSlackDraftWorker: (args: StartSlackDraftWorkerArgs) => void;
+  /** Live: auto-draft once per DM-question Needs-you (auto-draft:{attentionId}). */
+  maybeAutoDraftSlackQuestions: () => void;
 
   approveReview: (id: string) => void;
   applyApproveReview: (id: string) => void;
@@ -310,10 +329,12 @@ export const useControlStore = create<ControlState>()(
         } else {
           set({ seedLiveMode: "live" });
         }
-        // Live enter: kick once for review-asks already present, then apply inboxes.
+        // Live enter: kick once for review-asks / DM questions already present, then apply inboxes.
         get().maybeAutoKickReviewAsks();
+        get().maybeAutoDraftSlackQuestions();
         void get().syncExternalInboxes().then(() => {
           get().maybeAutoKickReviewAsks();
+          get().maybeAutoDraftSlackQuestions();
         });
       },
 
@@ -510,6 +531,7 @@ export const useControlStore = create<ControlState>()(
         });
         get().recomputeMode();
         get().maybeAutoKickReviewAsks();
+        get().maybeAutoDraftSlackQuestions();
       },
 
       syncGithubInbox: async () => {
@@ -570,7 +592,13 @@ export const useControlStore = create<ControlState>()(
               const existingIdx = attention.findIndex((a) => a.id === att.id);
               if (existingIdx >= 0) {
                 const prev = attention[existingIdx];
-                if (prev.routing !== att.routing || prev.why !== att.why) {
+                const needsSlackFields =
+                  !!att.slackChannelId && !prev.slackChannelId;
+                if (
+                  prev.routing !== att.routing ||
+                  prev.why !== att.why ||
+                  needsSlackFields
+                ) {
                   attention = attention.map((a, i) =>
                     i === existingIdx
                       ? {
@@ -578,6 +606,17 @@ export const useControlStore = create<ControlState>()(
                           routing: att.routing,
                           why: att.why,
                           provenance: att.provenance,
+                          slackChannelId:
+                            att.slackChannelId ?? a.slackChannelId,
+                          slackChannelKind:
+                            att.slackChannelKind ?? a.slackChannelKind,
+                          slackMessageTs:
+                            att.slackMessageTs ?? a.slackMessageTs,
+                          slackThreadTs: att.slackThreadTs ?? a.slackThreadTs,
+                          slackPermalink:
+                            att.slackPermalink ?? a.slackPermalink,
+                          slackTextExcerpt:
+                            att.slackTextExcerpt ?? a.slackTextExcerpt,
                         }
                       : a
                   );
@@ -683,6 +722,7 @@ export const useControlStore = create<ControlState>()(
         });
         get().recomputeMode();
         get().maybeAutoKickReviewAsks();
+        get().maybeAutoDraftSlackQuestions();
       },
 
       syncSlackInbox: async () => {
@@ -1068,6 +1108,7 @@ export const useControlStore = create<ControlState>()(
         }, delay);
       },
 
+
       maybeAutoKickReviewAsks: () => {
         if (get().seedLiveMode !== "live") return;
         for (const att of get().attention) {
@@ -1088,6 +1129,334 @@ export const useControlStore = create<ControlState>()(
             attentionId: att.id,
             source: "auto",
             attentionProvenance: att.provenance,
+          });
+        }
+      },
+
+      startSlackDraftWorker: (args) => {
+        const channelId = (args.channelId ?? "").trim();
+        const messageTs = (args.messageTs ?? "").trim();
+        if (!channelId || !messageTs) return;
+
+        const threadTs = (args.threadTs ?? "").trim() || messageTs;
+        const attentionId = args.attentionId;
+        const channelLabel = args.channelLabel?.trim() || channelId;
+        const idemKey = autoDraftIdempotencyKey(attentionId);
+        const agentName = buildSlackDraftAgent({
+          id: "tmp",
+          channelLabel,
+          source: args.source,
+        }).name;
+        const live = get().seedLiveMode === "live";
+
+        // Demo: no invented drafts. Manual Draft reply in Demo is a no-op
+        // (Live inbox messages are not applied in Demo).
+        if (!live) return;
+
+        if (args.source === "auto") {
+          const gate = shouldBlockAutoDraft({
+            idemKey,
+            agentName,
+            autoKickedReviewKeys: get().autoKickedReviewKeys,
+            autoKickInFlight: autoKickInFlight.has(idemKey),
+            agents: get().agents,
+            reviewQueue: get().reviewQueue,
+            attentionId,
+          });
+          if (gate.block) return;
+          if (gate.reason === "stale_key") {
+            set({
+              autoKickedReviewKeys: get().autoKickedReviewKeys.filter(
+                (k) => k !== idemKey
+              ),
+            });
+          }
+          autoKickInFlight.add(idemKey);
+          set({
+            autoKickedReviewKeys: [...get().autoKickedReviewKeys, idemKey],
+          });
+        }
+
+        const agentId = uid("agent");
+        const epoch = reviewWorkerEpoch;
+        const newAgent = buildSlackDraftAgent({
+          id: agentId,
+          channelLabel,
+          workstreamId: args.workstreamId,
+          source: args.source,
+        });
+        newAgent.detail = WAITING_FOR_LOCAL_WORKER_DETAIL;
+
+        set({
+          agents: [...get().agents, newAgent],
+        });
+        // Prep ≠ done: do NOT resolve Needs-you on Draft reply.
+
+        const workstreamId = args.workstreamId;
+        const stillCurrent = () => {
+          if (epoch !== reviewWorkerEpoch) return false;
+          const a = get().agents.find((x) => x.id === agentId);
+          return !!a && a.status === "Running";
+        };
+
+        const landOk = (reviewItem: ReviewItem, summaryDetail?: string) => {
+          if (!stillCurrent()) return;
+          set({
+            agents: get().agents.map((a) =>
+              a.id === agentId
+                ? {
+                    ...a,
+                    status: "Complete",
+                    needsReview: true,
+                    reviewItemId: reviewItem.id,
+                    completedAt: "just now",
+                    detail: summaryDetail ?? "Complete — waiting in Review.",
+                  }
+                : a
+            ),
+            reviewQueue: [...get().reviewQueue, reviewItem],
+            workstreams: get().workstreams.map((w) => {
+              if (!workstreamId || w.id !== workstreamId) return w;
+              const agentIds = w.agentIds.includes(agentId)
+                ? w.agentIds
+                : [...w.agentIds, agentId];
+              return { ...w, agentIds, lastActive: "just now" };
+            }),
+          });
+        };
+
+        const landFailed = (detail: string, blocked = false) => {
+          if (!stillCurrent()) return;
+          set({
+            agents: get().agents.map((a) =>
+              a.id === agentId
+                ? {
+                    ...a,
+                    status: blocked ? "Blocked on permission" : "Failed",
+                    completedAt: "just now",
+                    detail,
+                    needsReview: false,
+                  }
+                : a
+            ),
+          });
+        };
+
+        const applyResult = (
+          result: ControlReviewResultV1,
+          jobMeta: {
+            channel_id: string;
+            message_ts: string;
+            thread_ts: string;
+            permalink: string;
+            text_excerpt?: string;
+            attention_id?: string;
+            provenance?: unknown[];
+            workstream_id?: string;
+          }
+        ) => {
+          if (result.status === "error") {
+            landFailed(
+              result.summary?.trim() || "Agent Failed",
+              /not configured|No review backend|control-review-worker/i.test(
+                result.summary ?? ""
+              )
+            );
+            return;
+          }
+          // Never invent draft — require worker draft_text.
+          if (typeof result.draft_text !== "string") {
+            landFailed("Agent Failed — slack_draft missing draft_text");
+            return;
+          }
+          const reviewId = uid("rev");
+          const reviewItem = buildSlackDraftReviewItemFromResult({
+            id: reviewId,
+            agentId,
+            result,
+            job: {
+              schema: "control.review_job.v1",
+              job_id: result.job_id,
+              kind: "slack_draft",
+              channel_id: jobMeta.channel_id,
+              message_ts: jobMeta.message_ts,
+              thread_ts: jobMeta.thread_ts,
+              permalink: jobMeta.permalink,
+              text_excerpt: jobMeta.text_excerpt,
+              attention_id: jobMeta.attention_id,
+              provenance: jobMeta.provenance ?? [],
+              workstream_id: jobMeta.workstream_id,
+            },
+            workstreamId,
+            channelLabel,
+            workspace: SLACK_E2E.workspace,
+          });
+          landOk(reviewItem);
+        };
+
+        const setWaitingDetail = () => {
+          if (!stillCurrent()) return;
+          set({
+            agents: get().agents.map((a) =>
+              a.id === agentId
+                ? {
+                    ...a,
+                    status: "Running",
+                    detail: WAITING_FOR_LOCAL_WORKER_DETAIL,
+                  }
+                : a
+            ),
+          });
+        };
+
+        const jobMeta = {
+          channel_id: channelId,
+          message_ts: messageTs,
+          thread_ts: threadTs,
+          permalink: (args.permalink ?? "").trim(),
+          text_excerpt: args.textExcerpt,
+          attention_id: attentionId,
+          provenance: args.provenance ?? [],
+          workstream_id: workstreamId,
+        };
+
+        const pollResult = async (jobId: string): Promise<void> => {
+          const waitMs = DEFAULT_WORKER_WAIT_MS;
+          const intervalMs = 2000;
+          const started = Date.now();
+          while (Date.now() - started < waitMs) {
+            if (!stillCurrent()) return;
+            await new Promise((r) => window.setTimeout(r, intervalMs));
+            if (!stillCurrent()) return;
+            try {
+              const poll = await fetch(
+                `/api/review/jobs/${encodeURIComponent(jobId)}`
+              );
+              const pdata = (await poll.json().catch(() => ({}))) as {
+                ok?: boolean;
+                status?: "pending" | "claimed" | "done" | "failed";
+                error?: string;
+                result?: ControlReviewResultV1 | null;
+                job?: {
+                  channel_id?: string;
+                  message_ts?: string;
+                  thread_ts?: string;
+                  permalink?: string;
+                  text_excerpt?: string;
+                  attention_id?: string;
+                  provenance?: unknown[];
+                  workstream_id?: string;
+                };
+              };
+              if (pdata.status === "done" && pdata.result) {
+                const j = pdata.job;
+                applyResult(pdata.result, {
+                  channel_id: j?.channel_id ?? jobMeta.channel_id,
+                  message_ts: j?.message_ts ?? jobMeta.message_ts,
+                  thread_ts: j?.thread_ts ?? jobMeta.thread_ts,
+                  permalink: j?.permalink ?? jobMeta.permalink,
+                  text_excerpt: j?.text_excerpt ?? jobMeta.text_excerpt,
+                  attention_id: j?.attention_id ?? jobMeta.attention_id,
+                  provenance: j?.provenance ?? jobMeta.provenance,
+                  workstream_id: j?.workstream_id ?? jobMeta.workstream_id,
+                });
+                return;
+              }
+              if (pdata.status === "failed") {
+                landFailed((pdata.error ?? "").trim() || "Agent Failed", false);
+                return;
+              }
+              if (pdata.ok === false && pdata.error) {
+                landFailed(pdata.error);
+                return;
+              }
+            } catch {
+              /* transient */
+            }
+          }
+          landFailed(WORKER_TIMEOUT_DETAIL, false);
+        };
+
+        void (async () => {
+          try {
+            const res = await fetch("/api/review/run", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                kind: "slack_draft",
+                channel_id: channelId,
+                message_ts: messageTs,
+                thread_ts: threadTs,
+                permalink: jobMeta.permalink,
+                text_excerpt: args.textExcerpt,
+                attention_id: attentionId,
+                workstream_id: workstreamId,
+                provenance: args.provenance ?? [],
+              }),
+            });
+            const data = (await res.json().catch(() => ({}))) as {
+              ok?: boolean;
+              pending?: boolean;
+              code?: string;
+              error?: string;
+              detail?: string;
+              backend?: string | null;
+              job?: { job_id?: string } | null;
+              job_id?: string;
+              result?: ControlReviewResultV1 | null;
+            };
+
+            const decision = interpretLiveReviewRunResponse(
+              res.ok,
+              res.status,
+              data
+            );
+
+            if (decision.action === "no_backend") {
+              landFailed(decision.detail, true);
+              return;
+            }
+            if (decision.action === "wait_worker") {
+              setWaitingDetail();
+              await pollResult(decision.jobId);
+              return;
+            }
+            if (decision.action === "apply_result") {
+              applyResult(decision.result, jobMeta);
+              return;
+            }
+            landFailed(decision.detail, decision.blocked);
+          } catch (err) {
+            landFailed(
+              err instanceof Error
+                ? err.message
+                : "Review runner request failed"
+            );
+          }
+        })();
+      },
+
+      maybeAutoDraftSlackQuestions: () => {
+        if (get().seedLiveMode !== "live") return;
+        for (const att of get().attention) {
+          if (!isSlackMessageNeedsYou(att)) continue;
+          if (!isAutoDraftEligible(att)) continue;
+          const channelId = att.slackChannelId?.trim();
+          const messageTs = att.slackMessageTs?.trim();
+          if (!channelId || !messageTs) continue;
+          get().startSlackDraftWorker({
+            attentionId: att.id,
+            channelId,
+            messageTs,
+            threadTs: att.slackThreadTs?.trim() || messageTs,
+            permalink: att.slackPermalink ?? "",
+            textExcerpt: att.slackTextExcerpt ?? "",
+            channelKind: att.slackChannelKind,
+            channelLabel: channelLabelFromAttention(att),
+            workstreamId: att.workstreamId,
+            provenance: att.provenance,
+            source: "auto",
+            why: att.why,
           });
         }
       },
@@ -1453,8 +1822,27 @@ export const useControlStore = create<ControlState>()(
         if (item.status === "queued") return;
 
         const textBody = item.draftText ?? "";
-        const channelId = item.slackTarget?.channelId ?? "C0BVCSA4T2P";
-        const threadTs = item.slackTarget?.threadTs ?? "1788808933.776429";
+        // Harness defaults only for seed Priya (rev-slack); Live drafts use item.slackTarget.
+        const channelId =
+          item.slackTarget?.channelId ??
+          (item.id === "rev-slack" ? SLACK_E2E.channelId : "");
+        const threadTs =
+          item.slackTarget?.threadTs ??
+          (item.id === "rev-slack" ? SLACK_E2E.threadTs : "");
+        if (!channelId || !threadTs) {
+          const current = get().confirmModal;
+          if (current) {
+            set({
+              confirmModal: {
+                ...current,
+                loading: false,
+                error:
+                  "Missing slackTarget channel/thread — cannot queue outbox.",
+              },
+            });
+          }
+          return;
+        }
 
         const modal = get().confirmModal;
         if (modal) {

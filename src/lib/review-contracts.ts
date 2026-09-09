@@ -18,16 +18,27 @@ export type ReviewBackend =
   | "fake"
   | "command";
 
+export type ReviewJobKind = "pr_review" | "slack_draft";
+
 export type ControlReviewJobV1 = {
   schema: typeof REVIEW_JOB_SCHEMA;
   job_id: string;
-  repo: string;
-  pr: number;
+  /** Default pr_review when repo+pr present (back-compat). */
+  kind?: ReviewJobKind;
+  /** pr_review (required when kind is pr_review / inferred). */
+  repo?: string;
+  pr?: number;
   head_sha?: string;
   workstream_id?: string;
   attention_id?: string;
   provenance?: unknown[];
   snapshot_path?: string;
+  /** slack_draft fields */
+  channel_id?: string;
+  thread_ts?: string;
+  message_ts?: string;
+  permalink?: string;
+  text_excerpt?: string;
 };
 
 export type ControlReviewFindingV1 = {
@@ -42,6 +53,8 @@ export type ControlReviewResultV1 = {
   status: "ok" | "error";
   summary: string;
   findings: ControlReviewFindingV1[];
+  /** Chip 4 slack_draft → ReviewItem.draftText */
+  draft_text?: string;
   scope?: { notes?: string };
   raw_path?: string;
 };
@@ -74,6 +87,24 @@ export function newReviewJobId(): string {
   return `rj-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+export function resolveReviewJobKind(raw: Record<string, unknown>): ReviewJobKind {
+  if (raw.kind === "slack_draft") return "slack_draft";
+  if (raw.kind === "pr_review") return "pr_review";
+  // Infer: repo+pr → pr_review; channel_id → slack_draft
+  const hasRepo = typeof raw.repo === "string" && raw.repo.trim();
+  const pr =
+    typeof raw.pr === "number"
+      ? raw.pr
+      : typeof raw.pr === "string"
+        ? parseInt(raw.pr, 10)
+        : NaN;
+  if (hasRepo && Number.isFinite(pr) && pr > 0) return "pr_review";
+  if (typeof raw.channel_id === "string" && raw.channel_id.trim()) {
+    return "slack_draft";
+  }
+  return "pr_review";
+}
+
 export function validateReviewJob(raw: unknown): {
   ok: true;
   job: ControlReviewJobV1;
@@ -91,6 +122,44 @@ export function validateReviewJob(raw: unknown): {
   if (typeof o.job_id !== "string" || !o.job_id.trim()) {
     return { ok: false, error: "job_id required" };
   }
+
+  const kind = resolveReviewJobKind(o);
+
+  if (kind === "slack_draft") {
+    if (typeof o.channel_id !== "string" || !o.channel_id.trim()) {
+      return { ok: false, error: "channel_id required for slack_draft" };
+    }
+    if (typeof o.message_ts !== "string" || !o.message_ts.trim()) {
+      return { ok: false, error: "message_ts required for slack_draft" };
+    }
+    const threadRaw =
+      typeof o.thread_ts === "string" && o.thread_ts.trim()
+        ? o.thread_ts.trim()
+        : o.message_ts.trim();
+    const job: ControlReviewJobV1 = {
+      schema: REVIEW_JOB_SCHEMA,
+      job_id: o.job_id.trim(),
+      kind: "slack_draft",
+      channel_id: o.channel_id.trim(),
+      message_ts: o.message_ts.trim(),
+      thread_ts: threadRaw,
+      provenance: Array.isArray(o.provenance) ? o.provenance : [],
+    };
+    if (typeof o.attention_id === "string" && o.attention_id.trim()) {
+      job.attention_id = o.attention_id.trim();
+    }
+    if (typeof o.permalink === "string" && o.permalink.trim()) {
+      job.permalink = o.permalink.trim();
+    }
+    if (typeof o.text_excerpt === "string") {
+      job.text_excerpt = o.text_excerpt;
+    }
+    if (typeof o.workstream_id === "string" && o.workstream_id.trim()) {
+      job.workstream_id = o.workstream_id.trim();
+    }
+    return { ok: true, job };
+  }
+
   if (typeof o.repo !== "string" || !o.repo.trim()) {
     return { ok: false, error: "repo required" };
   }
@@ -106,6 +175,7 @@ export function validateReviewJob(raw: unknown): {
   const job: ControlReviewJobV1 = {
     schema: REVIEW_JOB_SCHEMA,
     job_id: o.job_id.trim(),
+    kind: "pr_review",
     repo: o.repo.trim(),
     pr: Math.trunc(pr),
   };
@@ -179,6 +249,9 @@ export function validateReviewResult(raw: unknown): {
     summary: o.summary,
     findings,
   };
+  if (typeof o.draft_text === "string") {
+    result.draft_text = o.draft_text;
+  }
   if (o.scope && typeof o.scope === "object") {
     const notes = (o.scope as Record<string, unknown>).notes;
     result.scope = {
@@ -302,12 +375,74 @@ export function buildReviewItemFromResult(opts: {
   };
 }
 
+export function slackDraftAgentName(channelLabel?: string): string {
+  const label = (channelLabel ?? "").trim();
+  return label ? `Draft reply · ${label}` : "Draft reply";
+}
+
+export function buildSlackDraftReviewItemFromResult(opts: {
+  id: string;
+  agentId: string;
+  result: ControlReviewResultV1;
+  job: ControlReviewJobV1;
+  workstreamId?: string;
+  channelLabel?: string;
+  workspace?: string;
+}): ReviewItem {
+  const channelId = (opts.job.channel_id ?? "").trim();
+  const messageTs = (opts.job.message_ts ?? "").trim();
+  const threadTs =
+    (opts.job.thread_ts ?? "").trim() || messageTs;
+  const permalink =
+    (opts.job.permalink ?? "").trim() ||
+    (channelId && messageTs
+      ? `https://slack.com/archives/${channelId}/p${messageTs.replace(".", "")}`
+      : "");
+  const draftText =
+    typeof opts.result.draft_text === "string" ? opts.result.draft_text : "";
+  const channelLabel =
+    opts.channelLabel?.trim() ||
+    channelId ||
+    "Slack";
+  return {
+    id: opts.id,
+    kind: "slack_draft",
+    title: slackDraftAgentName(channelLabel),
+    workstreamId: opts.workstreamId ?? opts.job.workstream_id,
+    label: "Draft reply",
+    analysisNote:
+      opts.result.summary?.trim() ||
+      "Draft only — posting requires confirmation.",
+    findings: [],
+    scopeFooter:
+      opts.result.scope?.notes?.trim() ||
+      "Draft only — posting requires explicit confirmation.",
+    draftText,
+    targetLabel: channelLabel,
+    attentionId: opts.job.attention_id,
+    slackTarget: channelId
+      ? {
+          workspace: opts.workspace ?? "slack",
+          channelId,
+          threadTs,
+          permalink,
+          channelName: channelLabel,
+        }
+      : undefined,
+    provenance: Array.isArray(opts.job.provenance)
+      ? (opts.job.provenance as Provenance[])
+      : undefined,
+    status: "pending",
+    agentId: opts.agentId,
+  };
+}
+
 /** Fake-backend fixture findings (test / smoke only — not Live default). */
 export function buildFakeReviewResult(
   job: ControlReviewJobV1
 ): ControlReviewResultV1 {
-  const repo = normalizeRepo(job.repo);
-  const pr = Math.trunc(job.pr);
+  const repo = normalizeRepo(job.repo ?? "");
+  const pr = Math.trunc(job.pr ?? 0);
   const url = githubPrUrlLocal(repo, pr);
   const locator = `${repo}#${pr}`;
   return {

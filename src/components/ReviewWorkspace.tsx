@@ -333,12 +333,23 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                 >
                   Reject
                 </button>
-                <Link
-                  href="/source/slack/slack-infra"
-                  className="btn-ghost"
-                >
-                  Open source
-                </Link>
+                {item.slackTarget?.permalink ? (
+                  <a
+                    href={item.slackTarget.permalink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn-ghost"
+                  >
+                    Open source
+                  </a>
+                ) : (
+                  <Link
+                    href="/source/slack/slack-infra"
+                    className="btn-ghost"
+                  >
+                    Open source
+                  </Link>
+                )}
               </>
             )}
           </div>

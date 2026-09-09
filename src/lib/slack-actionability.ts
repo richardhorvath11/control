@@ -1,19 +1,20 @@
 /**
- * V0.8 chip 3 — Deterministic Slack message actionability (no LLM).
+ * V0.8 chip 3/4 — Deterministic Slack message actionability (no LLM).
  * First match wins. Pure / unit-testable.
  *
- * Rules:
- * 1. DM/MPIM to me — channel_kind im|mpim
- * 2. @me / user mention — mentions_me OR text contains <@myUserId>
- * 3. Thread I'm in — thread_ts set AND thread_participated:true
- * 4. DM question — channel_kind===im AND text has `?` AND excerpt length ≤ 280
+ * Rules (chip 4 reorder: short DM ? before generic DM so why is "Question in DM"):
+ * 1. DM question — channel_kind===im AND text has `?` AND excerpt length ≤ 280
+ * 2. DM/MPIM to me — channel_kind im|mpim
+ * 3. @me / user mention — mentions_me OR text contains <@myUserId>
+ * 4. Thread I'm in — thread_ts set AND thread_participated:true
  *
- * myUserId required when a rule must identify "me" via mention text (rule 2
+ * myUserId required when a rule must identify "me" via mention text (rule 3
  * without mentions_me). Missing myUserId → that rule does not match (fail closed).
- * Do not invent thread history: absent thread_participated skips rule 3.
+ * Do not invent thread history: absent thread_participated skips rule 4.
  *
- * Note: rule 4 overlaps rule 1 for short IMs with `?` — first match means
- * im/mpim hits rule 1 with why "DM to you". Rule 4 remains in the table.
+ * Chip 4 choice: prefer "Question in DM" labels for short actionable DM questions
+ * (auto-draft eligibility + clearer Needs-you why). Generic DMs / MPIMs still
+ * Needs-you via rule 2; short DM with ? still Needs-you (now rule 1).
  */
 
 import type { SlackSurfaceKind } from "./github-inbox";
@@ -64,44 +65,45 @@ export function evaluateSlackActionability(
       : undefined;
 
   // Each rule in its own function so TS does not narrow kind across the table.
+  // Chip 4: short DM ? before generic DM so why/rule labels "Question in DM".
   const rules: Array<() => SlackActionabilityResult | null> = [
-    // 1. DM/MPIM to me (allowlist already gated; kind is enough)
-    () => {
-      if (kind === "im" || kind === "mpim") {
-        return { actionable: true, why: "DM to you", rule: 1 };
-      }
-      return null;
-    },
-    // 2. @me / user mention
-    () => {
-      if (input.mentions_me === true) {
-        return { actionable: true, why: "Mentioned you", rule: 2 };
-      }
-      if (myUserId && excerpt.includes(mentionToken(myUserId))) {
-        return { actionable: true, why: "Mentioned you", rule: 2 };
-      }
-      // Fail closed: need myUserId to scan text; without it and no mentions_me → skip
-      return null;
-    },
-    // 3. Thread I'm in — only when participation flag is explicitly true
-    () => {
-      if (
-        typeof input.thread_ts === "string" &&
-        input.thread_ts.trim() &&
-        input.thread_participated === true
-      ) {
-        return { actionable: true, why: "Thread you're in", rule: 3 };
-      }
-      return null;
-    },
-    // 4. DM question (overlaps rule 1 for im; kept for spec / first-match docs)
+    // 1. DM question (short IM with ?) — before generic DM so auto-draft matches brief
     () => {
       if (
         kind === "im" &&
         excerpt.includes("?") &&
         excerpt.length <= DM_QUESTION_MAX
       ) {
-        return { actionable: true, why: "Question in DM", rule: 4 };
+        return { actionable: true, why: "Question in DM", rule: 1 };
+      }
+      return null;
+    },
+    // 2. DM/MPIM to me (allowlist already gated; kind is enough)
+    () => {
+      if (kind === "im" || kind === "mpim") {
+        return { actionable: true, why: "DM to you", rule: 2 };
+      }
+      return null;
+    },
+    // 3. @me / user mention
+    () => {
+      if (input.mentions_me === true) {
+        return { actionable: true, why: "Mentioned you", rule: 3 };
+      }
+      if (myUserId && excerpt.includes(mentionToken(myUserId))) {
+        return { actionable: true, why: "Mentioned you", rule: 3 };
+      }
+      // Fail closed: need myUserId to scan text; without it and no mentions_me → skip
+      return null;
+    },
+    // 4. Thread I'm in — only when participation flag is explicitly true
+    () => {
+      if (
+        typeof input.thread_ts === "string" &&
+        input.thread_ts.trim() &&
+        input.thread_participated === true
+      ) {
+        return { actionable: true, why: "Thread you're in", rule: 4 };
       }
       return null;
     },

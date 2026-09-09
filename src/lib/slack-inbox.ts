@@ -88,6 +88,13 @@ export interface SlackAttentionEffect {
   slackDedupeKey: string;
   /** normalize(repo)#pr for coalesce with GitHub review.requested */
   coalesceKey?: string;
+  /** Chip 4: inbound message fields for Draft reply job. */
+  slackChannelId?: string;
+  slackChannelKind?: SlackSurfaceKind;
+  slackMessageTs?: string;
+  slackThreadTs?: string;
+  slackPermalink?: string;
+  slackTextExcerpt?: string;
 }
 
 export interface SlackNewWorkstream {
@@ -468,6 +475,10 @@ export function routeSlackMessageEvent(
     event.message_ts
   );
 
+  const threadTs =
+    typeof event.thread_ts === "string" && event.thread_ts.trim()
+      ? event.thread_ts.trim()
+      : event.message_ts;
   const attention: SlackAttentionEffect = {
     id: attentionId,
     routing: "now",
@@ -489,6 +500,12 @@ export function routeSlackMessageEvent(
     origin: "slack",
     slackEventId: event.id,
     slackDedupeKey: messageDedupeKey(event),
+    slackChannelId: event.channel_id,
+    slackChannelKind: event.channel_kind,
+    slackMessageTs: event.message_ts,
+    slackThreadTs: threadTs,
+    slackPermalink: event.permalink,
+    slackTextExcerpt: event.text_excerpt,
   };
 
   return {

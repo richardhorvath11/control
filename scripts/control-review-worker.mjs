@@ -75,6 +75,22 @@ function normalizeRepo(repo) {
     .toLowerCase();
 }
 
+function resolveKind(raw) {
+  if (raw.kind === "slack_draft") return "slack_draft";
+  if (raw.kind === "pr_review") return "pr_review";
+  if (typeof raw.channel_id === "string" && raw.channel_id.trim()) {
+    const hasRepo = typeof raw.repo === "string" && raw.repo.trim();
+    const pr =
+      typeof raw.pr === "number"
+        ? raw.pr
+        : typeof raw.pr === "string"
+          ? parseInt(raw.pr, 10)
+          : NaN;
+    if (!(hasRepo && Number.isFinite(pr) && pr > 0)) return "slack_draft";
+  }
+  return "pr_review";
+}
+
 function validateJob(raw) {
   if (!raw || typeof raw !== "object") return { ok: false, error: "Job must be object" };
   if (raw.schema !== REVIEW_JOB_SCHEMA) {
@@ -82,6 +98,40 @@ function validateJob(raw) {
   }
   if (typeof raw.job_id !== "string" || !raw.job_id.trim()) {
     return { ok: false, error: "job_id required" };
+  }
+  const kind = resolveKind(raw);
+  if (kind === "slack_draft") {
+    if (typeof raw.channel_id !== "string" || !raw.channel_id.trim()) {
+      return { ok: false, error: "channel_id required for slack_draft" };
+    }
+    if (typeof raw.message_ts !== "string" || !raw.message_ts.trim()) {
+      return { ok: false, error: "message_ts required for slack_draft" };
+    }
+    const message_ts = raw.message_ts.trim();
+    const thread_ts =
+      typeof raw.thread_ts === "string" && raw.thread_ts.trim()
+        ? raw.thread_ts.trim()
+        : message_ts;
+    return {
+      ok: true,
+      job: {
+        schema: REVIEW_JOB_SCHEMA,
+        job_id: raw.job_id.trim(),
+        kind: "slack_draft",
+        channel_id: raw.channel_id.trim(),
+        message_ts,
+        thread_ts,
+        permalink:
+          typeof raw.permalink === "string" ? raw.permalink : undefined,
+        text_excerpt:
+          typeof raw.text_excerpt === "string" ? raw.text_excerpt : undefined,
+        workstream_id:
+          typeof raw.workstream_id === "string" ? raw.workstream_id : undefined,
+        attention_id:
+          typeof raw.attention_id === "string" ? raw.attention_id : undefined,
+        provenance: Array.isArray(raw.provenance) ? raw.provenance : [],
+      },
+    };
   }
   if (typeof raw.repo !== "string" || !raw.repo.trim()) {
     return { ok: false, error: "repo required" };
@@ -100,6 +150,7 @@ function validateJob(raw) {
     job: {
       schema: REVIEW_JOB_SCHEMA,
       job_id: raw.job_id.trim(),
+      kind: "pr_review",
       repo: raw.repo.trim(),
       pr: Math.trunc(pr),
       head_sha: typeof raw.head_sha === "string" ? raw.head_sha : undefined,
@@ -131,6 +182,7 @@ function validateResult(raw) {
       return { ok: false, error: `findings[${i}] needs title+body` };
     }
   }
+  // draft_text optional (slack_draft); pass through when present
   return { ok: true, result: raw };
 }
 
@@ -227,6 +279,17 @@ function heartbeatLoop(jobId) {
 }
 
 function buildGluePrompt(job) {
+  if (job.kind === "slack_draft") {
+    return [
+      "You are a thin Slack draft-reply glue for Control (not a product skill/plugin).",
+      "Read the inbound Slack message job JSON and reply with ONLY one JSON object matching schema control.review_result.v1:",
+      '{ "schema":"control.review_result.v1", "job_id", "status":"ok"|"error", "summary", "draft_text":"…exact reply draft…", "findings":[], "scope":{"notes":"…"} }',
+      "Write draft_text as a concise, professional Slack reply to the inbound message. Do not invent facts. findings must be [].",
+      `Channel: ${job.channel_id} · thread_ts: ${job.thread_ts} · message_ts: ${job.message_ts}`,
+      "Job JSON:",
+      JSON.stringify(job),
+    ].join("\n");
+  }
   const repo = normalizeRepo(job.repo);
   const locator = `${repo}#${job.pr}`;
   return [
@@ -339,7 +402,11 @@ async function processOne() {
     return { exitCode: 3 };
   }
   const job = v.job;
-  console.log(`claimed ${job.job_id} · ${normalizeRepo(job.repo)}#${job.pr}`);
+  console.log(
+    job.kind === "slack_draft"
+      ? `claimed ${job.job_id} · slack_draft ${job.channel_id} ${job.message_ts}`
+      : `claimed ${job.job_id} · ${normalizeRepo(job.repo)}#${job.pr}`
+  );
 
   const stopBeat = heartbeatLoop(job.job_id);
   let run;
@@ -370,6 +437,25 @@ async function processOne() {
       return { exitCode: 2 };
     }
     console.error("parse fail");
+    return { exitCode: 3 };
+  }
+
+  // slack_draft: require draft_text on ok — never invent a templated reply
+  if (
+    job.kind === "slack_draft" &&
+    run.result.status === "ok" &&
+    typeof run.result.draft_text !== "string"
+  ) {
+    try {
+      await postFail(
+        job.job_id,
+        "Agent Failed — slack_draft result missing draft_text"
+      );
+    } catch (e) {
+      console.error("fail POST failed:", e instanceof Error ? e.message : e);
+      return { exitCode: 2 };
+    }
+    console.error("missing draft_text");
     return { exitCode: 3 };
   }
 

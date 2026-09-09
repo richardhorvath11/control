@@ -86,8 +86,8 @@ assert(!validateReviewJob({ schema: "nope" }).ok, "bad schema rejected");
     );
     const item = buildReviewItemFromResult({
       id: "rev-smoke",
-      repo: job.repo,
-      pr: job.pr,
+      repo: job.repo!,
+      pr: job.pr!,
       agentId: "agent-smoke",
       result: vr.result,
     });

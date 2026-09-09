@@ -167,7 +167,7 @@ assert(
   "channel ? without mention → ignore"
 );
 
-// Short DM with ? hits rule 1 first (why DM to you), not rule 4
+// Chip 4: short DM with ? hits Question in DM before generic DM
 const shortDmQ = evaluateSlackActionability({
   channel_kind: "im",
   text_excerpt: "got a sec?",
@@ -175,9 +175,25 @@ const shortDmQ = evaluateSlackActionability({
 });
 assert(
   shortDmQ.actionable === true &&
-    (shortDmQ as { why: string; rule: number }).why === "DM to you" &&
+    (shortDmQ as { why: string; rule: number }).why === "Question in DM" &&
     (shortDmQ as { rule: number }).rule === 1,
-  "short DM ? → rule1 DM (first match)"
+  "short DM ? → Question in DM (chip 4 reorder)"
+);
+
+assert(
+  evaluateSlackActionability({
+    channel_kind: "im",
+    text_excerpt: "hey no question mark",
+    myUserId: MY,
+  }).actionable === true &&
+    (
+      evaluateSlackActionability({
+        channel_kind: "im",
+        text_excerpt: "hey no question mark",
+        myUserId: MY,
+      }) as { why: string }
+    ).why === "DM to you",
+  "DM without ? → DM to you"
 );
 
 assert(
@@ -205,7 +221,7 @@ const dm = routeSlackMessageEvent(
 );
 assert(!dm.ignored, "DM allowlisted");
 assert(dm.attention?.routing === "now", "1 DM → Needs-you");
-assert(dm.attention?.why === "DM to you", "1 why DM to you");
+assert(dm.attention?.why === "Question in DM", "1 why Question in DM (has ?)");
 assert(dm.attention?.origin === "slack", "origin slack");
 assert(dm.attention?.suggestedAction === "open", "suggestedAction open");
 assert(dm.attention?.workstreamId === undefined, "no workstream spam");
@@ -218,6 +234,9 @@ assert(
   dm.attention?.id === slackMessageAttentionId("D0ABCDEF", "10.1"),
   "attention id matches"
 );
+assert(dm.attention?.slackChannelId === "D0ABCDEF", "chip4 channel_id on attention");
+assert(!!dm.attention?.slackMessageTs, "chip4 message_ts on attention");
+assert(!!dm.attention?.slackThreadTs, "chip4 thread_ts on attention");
 
 const plain = routeSlackMessageEvent(
   msg({

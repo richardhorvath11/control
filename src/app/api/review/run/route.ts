@@ -11,6 +11,7 @@ export const maxDuration = 300;
 
 type Body = {
   job_id?: string;
+  kind?: "pr_review" | "slack_draft";
   repo?: string;
   pr?: number | string;
   head_sha?: string;
@@ -18,13 +19,17 @@ type Body = {
   attention_id?: string;
   provenance?: unknown[];
   snapshot_path?: string;
+  channel_id?: string;
+  thread_ts?: string;
+  message_ts?: string;
+  permalink?: string;
+  text_excerpt?: string;
 };
 
 /**
- * POST /api/review/run — Live review path.
+ * POST /api/review/run — Live review path (pr_review or slack_draft).
  * Default backend=worker: enqueue control.review_job.v1 only (no server-spawn claude);
  * worker claims via POST /api/review/jobs/claim; client polls GET /api/review/jobs/:id.
- * Other backends (command / fake / claude-cli / cursor-cloud): invoke control-review-run.
  */
 export async function POST(req: NextRequest) {
   let body: Body;
@@ -32,6 +37,60 @@ export async function POST(req: NextRequest) {
     body = (await req.json()) as Body;
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const kind =
+    body.kind === "slack_draft"
+      ? "slack_draft"
+      : body.kind === "pr_review"
+        ? "pr_review"
+        : typeof body.channel_id === "string" &&
+            body.channel_id.trim() &&
+            !(typeof body.repo === "string" && body.repo.trim())
+          ? "slack_draft"
+          : "pr_review";
+
+  if (!resolveReviewBackend()) {
+    return NextResponse.json(
+      {
+        ok: false,
+        code: "NO_BACKEND",
+        error: NO_REVIEW_BACKEND_DETAIL,
+        backend: null,
+      },
+      { status: 503 }
+    );
+  }
+
+  if (kind === "slack_draft") {
+    const channel_id =
+      typeof body.channel_id === "string" ? body.channel_id.trim() : "";
+    const message_ts =
+      typeof body.message_ts === "string" ? body.message_ts.trim() : "";
+    if (!channel_id || !message_ts) {
+      return NextResponse.json(
+        { error: "channel_id and message_ts required for slack_draft" },
+        { status: 400 }
+      );
+    }
+
+    const outcome = await invokeReviewRunner({
+      job_id: body.job_id,
+      kind: "slack_draft",
+      channel_id,
+      message_ts,
+      thread_ts:
+        typeof body.thread_ts === "string" ? body.thread_ts : undefined,
+      permalink:
+        typeof body.permalink === "string" ? body.permalink : undefined,
+      text_excerpt:
+        typeof body.text_excerpt === "string" ? body.text_excerpt : undefined,
+      workstream_id: body.workstream_id,
+      attention_id: body.attention_id,
+      provenance: body.provenance,
+    });
+
+    return respondOutcome(outcome);
   }
 
   const repo = typeof body.repo === "string" ? body.repo.trim() : "";
@@ -48,20 +107,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (!resolveReviewBackend()) {
-    return NextResponse.json(
-      {
-        ok: false,
-        code: "NO_BACKEND",
-        error: NO_REVIEW_BACKEND_DETAIL,
-        backend: null,
-      },
-      { status: 503 }
-    );
-  }
-
   const outcome = await invokeReviewRunner({
     job_id: body.job_id,
+    kind: "pr_review",
     repo,
     pr: Math.trunc(pr),
     head_sha: body.head_sha,
@@ -71,6 +119,12 @@ export async function POST(req: NextRequest) {
     snapshot_path: body.snapshot_path,
   });
 
+  return respondOutcome(outcome);
+}
+
+function respondOutcome(
+  outcome: Awaited<ReturnType<typeof invokeReviewRunner>>
+) {
   if (!outcome.ok) {
     const status =
       outcome.code === "NO_BACKEND"
@@ -127,6 +181,7 @@ export async function GET() {
       prefer: "worker",
       auth: "claude login or CLAUDE_CODE_OAUTH_TOKEN from claude setup-token — no ANTHROPIC_API_KEY required",
       cli: "./scripts/control-review-worker --once|--watch",
+      kinds: ["pr_review", "slack_draft"],
     },
   });
 }

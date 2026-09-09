@@ -1,4 +1,4 @@
-# Control — V0.8 (chip 3: Rules actionability → Needs-you)
+# Control — V0.8 (chip 4: Draft reply → Review → outbox)
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
 
@@ -240,9 +240,9 @@ Durable files: `.control/slack-inbox/<id>.json`. No Slack token in Control.
 
 **`type: "pr_link"`**: `id` (prefer `channel_ts`), `channel_id`, `message_ts`, `permalink`, `text_excerpt`, `repo`, `pr_number`, `occurred_at`, dual `provenance` (slack + github). Only surfaces with `prLinks: true`; PR URL must be for `watch.repo`; why uses the matched surface name; watched PR attaches `workstreamId`, else ephemeral `Review · {repo}#{N}`. `prLinks: false` → ignore `pr_link` routing (document reason).
 
-**`type: "message"`**: `id`, `channel_id`, `channel_kind`, `message_ts`, `thread_ts?`, `thread_participated?`, `permalink`, `text_excerpt` (~2k), `user_id?`, `occurred_at`, `mentions_me?`. Allowlist: `channel_id ∈ surfaces` **or** (im/mpim && include flags + `myUserId`). **V0.8 chip 3**: deterministic rules (no LLM) → **Needs-you** when actionable-for-me, else store + **ignore** (no FYI firehose). First match: (1) im|mpim → `DM to you`; (2) `mentions_me` or text `<@myUserId>` → `Mentioned you`; (3) `thread_ts` + `thread_participated:true` → `Thread you're in`; (4) im + `?` + ≤280 → `Question in DM`. Missing `myUserId` fail-closes mention text scan; absent `thread_participated` skips rule 3. Attention id `slack-msg-{channel}-{ts}`, origin `slack`, `suggestedAction: "open"`, Slack permalink provenance; shared `NEEDS_YOU_EXTERNAL_CAP=5`; no workstream checkpoint spam. Dedupe `(channel_id, message_ts)`. Allowed → **201**. Reject unknown types / malformed → **4xx**.
+**`type: "message"`**: `id`, `channel_id`, `channel_kind`, `message_ts`, `thread_ts?`, `thread_participated?`, `permalink`, `text_excerpt` (~2k), `user_id?`, `occurred_at`, `mentions_me?`. Allowlist: `channel_id ∈ surfaces` **or** (im/mpim && include flags + `myUserId`). **V0.8 chip 3/4**: deterministic rules (no LLM) → **Needs-you** when actionable-for-me, else store + **ignore** (no FYI firehose). First match (**chip 4 reorder**): (1) im + `?` + ≤280 → `Question in DM`; (2) im|mpim → `DM to you`; (3) `mentions_me` or text `<@myUserId>` → `Mentioned you`; (4) `thread_ts` + `thread_participated:true` → `Thread you're in`. Choice: prefer `Question in DM` why for short DM questions (auto-draft + clearer labels); DM/short-DM-? still Needs-you. Missing `myUserId` fail-closes mention text scan; absent `thread_participated` skips rule 4. Attention id `slack-msg-{channel}-{ts}`, origin `slack`, `suggestedAction: "open"`, Slack permalink provenance + chip 4 channel/thread fields; shared `NEEDS_YOU_EXTERNAL_CAP=5`; no workstream checkpoint spam. Dedupe `(channel_id, message_ts)`. Allowed → **201**. Reject unknown types / malformed → **4xx**.
 
-No org-wide Slack. No Slack token / no LLM in this path. Draft reply = chip 4 (cut).
+No org-wide Slack. No Slack token in Control. **Chip 4**: Draft reply on origin:slack Needs-you → `slack_draft` review job (local worker) → Confirm → `POST /api/slack/outbox`. Auto-draft once for DM questions (`auto-draft:{attentionId}`); channel @mention does not auto-draft. Prep ≠ done (Needs-you stays until Approve/Dismiss). Live fails closed without worker — no fake draft. Demo: manual only; no auto; seed Priya `rev-slack` unchanged.
 
 | Method | Path | Body | Response |
 |--------|------|------|----------|
@@ -381,6 +381,7 @@ Job (API body / `control-review-run --in` for command backends only):
 {
   "schema": "control.review_job.v1",
   "job_id": "rj-…",
+  "kind": "pr_review",
   "repo": "owner/name",
   "pr": 32,
   "head_sha": "optional",
@@ -388,6 +389,23 @@ Job (API body / `control-review-run --in` for command backends only):
   "attention_id": "optional",
   "provenance": [],
   "snapshot_path": "optional"
+}
+```
+
+`kind` defaults to `pr_review` when `repo`+`pr` present (back-compat). **Chip 4 `slack_draft`:**
+
+```json
+{
+  "schema": "control.review_job.v1",
+  "job_id": "rj-…",
+  "kind": "slack_draft",
+  "attention_id": "slack-msg-…",
+  "channel_id": "C…|D…",
+  "thread_ts": "…",
+  "message_ts": "…",
+  "permalink": "https://…",
+  "text_excerpt": "…",
+  "provenance": []
 }
 ```
 
@@ -399,10 +417,13 @@ Result (API body `POST /api/review/jobs/:id/result`, or `--out` for command / co
   "job_id": "rj-…",
   "status": "ok",
   "summary": "…",
+  "draft_text": "…optional; required for ok slack_draft…",
   "findings": [{ "title": "…", "body": "…", "evidence": [] }],
   "scope": { "notes": "…" }
 }
 ```
+
+`draft_text` maps to `ReviewItem.draftText` for `slack_draft`. Live never invents a templated reply when the worker is missing — Agent Failed / timeout with `./scripts/control-review-worker` copy.
 
 #### Env knobs
 
@@ -612,6 +633,6 @@ Command palette (⌘K) opens the launcher (not chat). Includes **Open Live setup
 
 ## Explicit cuts
 
-Claude judge/draft (V0.8 chip 4) · Agents board (chip 5) · urgency ML · FYI firehose for non-actionable Slack · inventing thread history · auto-send.
+Agents board (V0.8 chip 5) · auto-send · urgency ML · org-wide · prompt library / skill pack · fake drafts on Live · FYI firehose for non-actionable Slack · inventing thread history.
 
 Team surface, auth, org-wide GitHub / org-wide Slack, channels without PR-URL filter, webhooks-in-Control, NLP without URL, live Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological feed, agent builder / free-form prompt, watch.autoReview policy, model-agnostic runner, Team/Mac/chat-home, baking seed as default dogfood, auto-merge, lorem, auto-send without confirm, Slack app / bot-token inside Next, GitHub App / PAT inside Control, raising external Needs-you cap without product call, multi-repo outbox UI, full IDE diff / Monaco / merge button, APPROVE/REQUEST_CHANGES review events from outbox (v1 comment-only).

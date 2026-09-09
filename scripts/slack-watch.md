@@ -91,4 +91,4 @@ Allowed channel → **201** stored. Chip 3 rules (first match): DM/MPIM → Need
 
 ## Cuts
 
-Claude draft (chip 4) · Agents board (chip 5) · urgency ML · org-wide · FYI firehose · inventing thread history · auto-send · Slack token / LLM in Control.
+Agents board (chip 5) · auto-send · urgency ML · org-wide · FYI firehose · inventing thread history · Slack token / skill pack in Control. Chip 4 Draft reply ships via review job APIs.

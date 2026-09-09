@@ -124,6 +124,7 @@ function MorningNow() {
   const used = useControlStore((s) => s.usedDelegationIds);
   const delegate = useControlStore((s) => s.delegate);
   const delegateAttention = useControlStore((s) => s.delegateAttention);
+  const startSlackDraftWorker = useControlStore((s) => s.startSlackDraftWorker);
   const resolveAttention = useControlStore((s) => s.resolveAttention);
   const [fyiOpen, setFyiOpen] = useState(false);
   /** Cap-demoted + native FYI attention — keep provenance / Open source (E2E-1). */
@@ -209,6 +210,38 @@ function MorningNow() {
                         Open Review
                       </Link>
                     )}
+                    {item.origin === "slack" &&
+                      !item.coalesceKey &&
+                      item.slackChannelId &&
+                      item.slackMessageTs && (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() =>
+                            startSlackDraftWorker({
+                              attentionId: item.id,
+                              channelId: item.slackChannelId!,
+                              messageTs: item.slackMessageTs!,
+                              threadTs:
+                                item.slackThreadTs || item.slackMessageTs!,
+                              permalink: item.slackPermalink || "",
+                              textExcerpt: item.slackTextExcerpt || "",
+                              channelKind: item.slackChannelKind,
+                              channelLabel:
+                                item.provenance[0]?.title?.replace(
+                                  /^Slack ·\s*/i,
+                                  ""
+                                ) || item.slackChannelId,
+                              workstreamId: item.workstreamId,
+                              provenance: item.provenance,
+                              source: "manual",
+                              why: item.why,
+                            })
+                          }
+                        >
+                          Draft reply
+                        </button>
+                      )}
                     {item.provenance[0]?.url &&
                     /^https:\/\//i.test(item.provenance[0].url) ? (
                       <a
@@ -217,7 +250,9 @@ function MorningNow() {
                         rel="noopener noreferrer"
                         className="btn-ghost"
                       >
-                        Open source
+                        {item.origin === "slack" && !item.coalesceKey
+                          ? "Open"
+                          : "Open source"}
                       </a>
                     ) : (
                       <Link
@@ -228,7 +263,9 @@ function MorningNow() {
                         }
                         className="btn-ghost"
                       >
-                        Open source
+                        {item.origin === "slack" && !item.coalesceKey
+                          ? "Open"
+                          : "Open source"}
                       </Link>
                     )}
                     <button
