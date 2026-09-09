@@ -177,7 +177,10 @@ const msgEvt = {
 };
 const msgRouted = routeSlackEvent(msgEvt, native);
 assert(!msgRouted.ignored, "message on surface allowed");
-assert(msgRouted.attention === null, "message creates no Attention Item");
+assert(
+  msgRouted.attention === null,
+  "channel message without mention → no Needs-you"
+);
 
 const msgUnknown = routeSlackEvent(
   { ...msgEvt, channel_id: "CUNKNOWN", id: "CUNKNOWN_2.2" },
@@ -198,6 +201,8 @@ const dmMsg = routeSlackEvent(
   native
 );
 assert(!dmMsg.ignored, "IM allowed when includeDms + myUserId");
+assert(dmMsg.attention?.routing === "now", "IM → Needs-you (chip 3)");
+assert(dmMsg.attention?.why === "DM to you", "IM why DM to you");
 
 const dmNoUser = routeSlackEvent(
   {

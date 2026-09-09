@@ -17,6 +17,11 @@ import {
   reviewAskTitle,
 } from "./coalesce-review-ask";
 import { upsertFollowFromSlackApply } from "./pr-follows";
+import {
+  evaluateSlackActionability,
+  slackMessageAttentionId,
+  slackMessageAttentionTitle,
+} from "./slack-actionability";
 
 export const SLACK_INBOX_DIR = path.join(CONTROL_DIR, "slack-inbox");
 
@@ -44,7 +49,7 @@ export interface SlackPrLinkInboxEvent {
   provenance: SlackProvenanceEntry[];
 }
 
-/** Durable plain message (V0.8 chip 2). Store only — no Attention Item / Needs-you. */
+/** Durable plain message (V0.8 chip 2+3). Chip 3: deterministic Needs-you when actionable. */
 export interface SlackMessageInboxEvent {
   id: string;
   type: "message";
@@ -52,6 +57,11 @@ export interface SlackMessageInboxEvent {
   channel_kind: SlackSurfaceKind;
   message_ts: string;
   thread_ts?: string;
+  /**
+   * Watcher-supplied: true when the user already participated in this thread.
+   * Absent → rule 3 skipped (do not invent history).
+   */
+  thread_participated?: boolean;
   permalink: string;
   /** Truncated ~2k */
   text_excerpt: string;
@@ -67,7 +77,8 @@ export interface SlackAttentionEffect {
   routing: "now" | "fyi";
   title: string;
   why: string;
-  workstreamId: string;
+  /** Omitted for plain-message Needs-you (no workstream spam). */
+  workstreamId?: string;
   suggestedAction: "open" | "delegate" | "open_review" | "resume";
   provenance: SlackProvenanceEntry[];
   createdAt: string;
@@ -291,6 +302,10 @@ export function validateSlackInboxEvent(
         : undefined;
     const mentions_me =
       typeof b.mentions_me === "boolean" ? b.mentions_me : undefined;
+    const thread_participated =
+      typeof b.thread_participated === "boolean"
+        ? b.thread_participated
+        : undefined;
 
     const event: SlackMessageInboxEvent = {
       id,
@@ -299,6 +314,7 @@ export function validateSlackInboxEvent(
       channel_kind,
       message_ts,
       ...(thread_ts ? { thread_ts } : {}),
+      ...(thread_participated !== undefined ? { thread_participated } : {}),
       permalink: b.permalink.trim(),
       text_excerpt: String(b.text_excerpt).slice(0, 2000),
       ...(user_id ? { user_id } : {}),
@@ -418,9 +434,65 @@ export function routeSlackMessageEvent(
     };
   }
 
-  // Store only — chip 3 adds Needs-you rules later. No Attention Item.
+  // V0.8 chip 3: deterministic rules → Needs-you or ignore (no FYI firehose).
+  const decision = evaluateSlackActionability({
+    channel_kind: event.channel_kind,
+    text_excerpt: event.text_excerpt,
+    mentions_me: event.mentions_me,
+    thread_ts: event.thread_ts,
+    thread_participated: event.thread_participated,
+    myUserId: watch.slackWatch.myUserId,
+  });
+
+  if (!decision.actionable) {
+    return {
+      attention: null,
+      fyiLine: null,
+      workstreamPatch: null,
+      newWorkstream: null,
+      capped: false,
+    };
+  }
+
+  const channelLabel =
+    gate.surface?.name?.trim() ||
+    (event.channel_kind === "im"
+      ? "DM"
+      : event.channel_kind === "mpim"
+        ? "group DM"
+        : event.channel_id);
+  const title = slackMessageAttentionTitle(event.text_excerpt, channelLabel);
+  const provenanceTitle = `Slack · ${channelLabel}`;
+  const attentionId = slackMessageAttentionId(
+    event.channel_id,
+    event.message_ts
+  );
+
+  const attention: SlackAttentionEffect = {
+    id: attentionId,
+    routing: "now",
+    title,
+    why: decision.why,
+    suggestedAction: "open",
+    provenance: [
+      {
+        kind: "slack",
+        title: provenanceTitle,
+        locator: event.message_ts,
+        excerpt: event.text_excerpt.slice(0, 240),
+        sourceId: `slack-${event.id}`,
+        url: event.permalink,
+        timestamp: event.occurred_at,
+      },
+    ],
+    createdAt: event.occurred_at,
+    origin: "slack",
+    slackEventId: event.id,
+    slackDedupeKey: messageDedupeKey(event),
+  };
+
   return {
-    attention: null,
+    attention,
     fyiLine: null,
     workstreamPatch: null,
     newWorkstream: null,
@@ -637,7 +709,7 @@ export function findSlackDedupeMatch(
 /**
  * Accept a Slack inbox event (pr_link | message). No Slack token in Control.
  * Wrong channel / wrong repo / prLinks:false → stored applied=false (ignored).
- * message: durable store only — no Attention Item.
+ * message: durable store; chip 3 may create Needs-you when actionable.
  */
 export async function acceptSlackInboxEvent(
   event: SlackInboxEvent
@@ -701,7 +773,7 @@ export async function acceptSlackInboxEvent(
 
   // Chip 4: upsert PR follow for non-primary Slack-discovered PRs (server-side).
   // Primary watch.pr is never stored as a follow; wrong repo already ignored above.
-  // Plain message events never create follows or Needs-you (chip 3).
+  // Plain message events never create follows (chip 3 Needs-you only).
   if (event.type === "pr_link") {
     const followWsId =
       effects.newWorkstream?.id ??
@@ -720,7 +792,10 @@ export async function acceptSlackInboxEvent(
         watch,
       });
     }
+  }
 
+  // Shared external Needs-you cap (pr_link + actionable message). Cap=5 unchanged.
+  if (effects.attention?.routing === "now") {
     const { enforceExternalNeedsYouCap } = await import("./needs-you-cap");
     await enforceExternalNeedsYouCap(NEEDS_YOU_EXTERNAL_CAP);
   }

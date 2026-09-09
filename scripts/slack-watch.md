@@ -1,9 +1,9 @@
-# Slack standing watcher (V0.8 chip 2 — broad slackWatch)
+# Slack standing watcher (V0.8 chip 2–3 — broad slackWatch + actionability)
 
 Control holds **no Slack token**. A host agent with **Slack MCP** reads configured `slackWatch` surfaces (and optionally DMs/MPIMs involving `myUserId`), then POSTs into Control:
 
 - **PR URL** on a surface with `prLinks: true` → `type: "pr_link"` (review-ask Needs-you / coalesce — unchanged)
-- **Otherwise** → `type: "message"` (durable store only — **no** Attention Item / Needs-you; chip 3)
+- **Otherwise** → `type: "message"` (durable store; chip 3 deterministic Needs-you when actionable)
 
 ## Watch fields
 
@@ -82,12 +82,13 @@ curl -sS -X POST "${CONTROL_BASE_URL:-http://localhost:3000}/api/slack/inbox" \
     "text_excerpt": "standup notes — no PR",
     "occurred_at": "2026-09-07T22:05:00.000Z",
     "user_id": "U123",
-    "mentions_me": false
+    "mentions_me": false,
+    "thread_participated": false
   }'
 ```
 
-Allowed channel → **201** stored; Needs-you unchanged. Unknown channel → ignored / 4xx; no Attention Item. Dedupe `(channel_id, message_ts)`.
+Allowed channel → **201** stored. Chip 3 rules (first match): DM/MPIM → Needs-you; `@me` / `mentions_me` → Needs-you; `thread_ts` + `thread_participated:true` → Needs-you; short IM `?` → Needs-you; else ignore (no FYI). Cap `NEEDS_YOU_EXTERNAL_CAP=5`. Unknown channel → ignored / 4xx. Dedupe `(channel_id, message_ts)`.
 
 ## Cuts
 
-Rules engine (chip 3) · drafts (chip 4) · Agents board (chip 5) · org-wide · keyword firehose · legacy forever · auto-send · Slack token in Control.
+Claude draft (chip 4) · Agents board (chip 5) · urgency ML · org-wide · FYI firehose · inventing thread history · auto-send · Slack token / LLM in Control.

@@ -42,7 +42,7 @@ export async function GET() {
 /**
  * POST /api/slack/inbox — accept SlackInboxEvent (pr_link | message).
  * Control holds NO Slack token. Idempotent on id (channel_ts).
- * message: durable store only — no Attention Item / Needs-you (chip 3).
+ * message: durable store; chip 3 deterministic rules may create Needs-you.
  * pr_link: only surfaces with prLinks:true; coalesce unchanged.
  */
 export async function POST(req: NextRequest) {
