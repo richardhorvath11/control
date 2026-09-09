@@ -1,4 +1,4 @@
-# Control — V0.7 (chip 4: Live Review workspace)
+# Control — V0.7 (chip 5: GitHub comment outbox)
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
 
@@ -70,6 +70,51 @@ Legacy `POST /api/slack/post` is soft-disabled (HTTP 410).
 | `POST` | `/api/slack/outbox/:id/fail` | `{ error? }` | `{ ok, item }` with `status: "failed"` |
 
 No secrets in git. Credentials (if any) live only with the Slack MCP host, not in Control.
+
+## GitHub comment outbox (V0.7 chip 5)
+
+Mirror of the Slack outbox for **PR comments**. From a Live **pr_review** item: **Draft comment** -> edit -> **Post comment...** confirm modal (exact body) -> durable `.control/github-outbox/{id}.json` -> local operator poster posts a **comment-only** PR conversation comment -> ack. Control holds **no** GitHub credentials. Slack outbox path (`.control/outbox/`) is unchanged.
+
+v1 is **comment-only**: the worker posts an issue comment on the PR (operator `gh` CLI). It does **not** submit review-approve events or merge.
+
+### Outbox record
+
+`.control/github-outbox/<id>.json` (gitignored under `.control/`):
+
+```json
+{
+  "id": "gh-outbox-...",
+  "status": "pending",
+  "repo": "owner/name",
+  "pr": 32,
+  "body": "...exact markdown...",
+  "review_item_id": "rev-...",
+  "created_at": "2026-09-09T12:00:00.000Z"
+}
+```
+
+After ack: `status: "posted"` plus `comment_url` / `comment_id`. After fail: `status: "failed"` plus `error` (Review returns to pending).
+
+| Method | Path | Body | Response |
+|--------|------|------|----------|
+| `GET` | `/api/github/outbox` | -- (`?status=pending|posted|failed|all`, default `pending`) | `{ ok, items }` |
+| `GET` | `/api/github/outbox/:id` | -- | `{ ok, item }` or 404 |
+| `POST` | `/api/github/outbox` | `{ body, repo, pr, reviewItemId }` | `201 { ok, item }` |
+| `POST` | `/api/github/outbox/:id/ack` | `{ comment_url?, comment_id? }` | `{ ok, item }` with `status: "posted"` |
+| `POST` | `/api/github/outbox/:id/fail` | `{ error? }` | `{ ok, item }` with `status: "failed"` |
+
+### Dogfood
+
+See scripts/github-outbox-worker and scripts/smoke-github-outbox.ts.
+
+```bash
+./scripts/github-outbox-worker
+./scripts/github-outbox-worker --watch
+./scripts/github-outbox-worker --dry-run
+npx tsx scripts/smoke-github-outbox.ts
+```
+
+UI: Review shows **Queued for GitHub (awaiting poster)** until ack -> approved + comment link. Cancel writes nothing. Fail -> pending + error. Cap `NEEDS_YOU_EXTERNAL_CAP = 5` unchanged.
 
 
 ## Indirect review inboxes (V0.5+)
@@ -349,7 +394,7 @@ npx tsx scripts/smoke-review-worker.ts
 curl -sS http://localhost:3000/api/review/run
 ```
 
-Out of chip 3b (still cut at the time): full pr-review skill/plugin/prompt pack · requiring Console API keys · Next spawn as Live default · agent builder · free-form prompt IDE · fake-as-Live-default · GitHub outbox (chip 5) · Team/Mac/chat-home. **Chip 4 (Live Review snapshot chrome) shipped below.**
+Out of chip 3b (still cut at the time): full pr-review skill/plugin/prompt pack · requiring Console API keys · Next spawn as Live default · agent builder · free-form prompt IDE · fake-as-Live-default · Team/Mac/chat-home. **Chip 4 (Live Review snapshot chrome) and chip 5 (GitHub comment outbox) shipped.**
 
 
 ### Live Review workspace (V0.7 chip 4)
@@ -389,8 +434,8 @@ Watcher tick or thin helper writes gitignored:
 | Enqueue | `review_job.v1.snapshot_path` preferred when the file exists on disk |
 | UI | Snapshot panel: CI chip+link, head SHA, file list (path+status, cap ~20, **no hunks**) |
 | Empty | Clear CTA to run watcher/script; **findings still render**; no crash |
-| Draft comment | Visible but **disabled** (“Chip 5”) — do not fake a GitHub post |
-| Stay cut | Full IDE / Monaco / patch hunks · merge button · GitHub outbox (chip 5) |
+| Draft comment | **Enabled (chip 5)** — confirm -> `.control/github-outbox/` -> local gh worker |
+| Stay cut | Full IDE / Monaco / patch hunks · merge button · auto-merge · credentials-in-Control |
 
 ```bash
 npx tsx scripts/smoke-pr-snapshot.ts
@@ -425,6 +470,9 @@ Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slac
 | GitHub state | `.control/github-watcher-state.json` (gitignored) |
 | PR follows (V0.6 chip 4) | `.control/pr-follows.json` (gitignored; Slack apply upserts) |
 | PR snapshots (V0.7 chip 4) | `.control/pr-snapshots/{owner}-{repo}-{pr}.json` (gitignored; gh/watcher writes) |
+| GitHub comment outbox (V0.7 chip 5) | `.control/github-outbox/*.json` (gitignored; Confirm writes; local gh worker posts) |
+| GitHub outbox worker | `./scripts/github-outbox-worker` (`--once` / `--watch` / `--dry-run`) |
+| GitHub outbox smoke | `npx tsx scripts/smoke-github-outbox.ts` |
 | Slack cursor state | `.control/slack-watcher-state.json` keyed by `channel_id` → last `ts` |
 | Follow smoke | `npx tsx scripts/smoke-pr-follows.ts` |
 | Auto-kick smoke | `npx tsx scripts/smoke-auto-kick-review.ts` |
@@ -467,6 +515,7 @@ Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, infinite fol
 - No auth, no live Slack ingestion, no database, **no GitHub/Slack tokens in Control**
 - Agent delegation + Live auto-kick PR review via default local Pro Claude **worker** (or `control-review-run` for command/fake/claude-cli); Demo keeps 3–8s sim; completion increments the Review badge only (no toasts)
 - Slack write for the Priya draft only (confirm-gated outbox -> MCP)
+- GitHub PR comment write (confirm-gated `.control/github-outbox/` -> local gh / MCP; comment-only)
 
 ## Seeded Monday
 
@@ -490,6 +539,7 @@ Workstreams: Staging credential rotation (human review), Search ranking experime
 | `/source/rfc/[id]` | Mocked RFC section |
 | `/source/calendar/[id]` | Mocked calendar event |
 | `GET/POST /api/slack/outbox` | Durable Slack outbox for MCP poster |
+| `GET/POST /api/github/outbox` | Durable GitHub comment outbox for local gh/MCP poster |
 | `GET/POST /api/github/inbox` | Durable GitHub inbox (watcher → Control) |
 | `GET/POST /api/slack/inbox` | Durable Slack PR-link inbox (watcher → Control) |
 | `POST /api/demo/reset` | Clear demo persist instruction; optional `clearInboxes=true` (keeps watch.json / pr-follows) |
@@ -497,6 +547,8 @@ Workstreams: Staging credential rotation (human review), Search ranking experime
 | `GET /api/demo/status` | Watch repo + Slack channel count + follows for Live banner |
 | `POST /api/slack/outbox/:id/ack` | Mark posted after MCP send |
 | `POST /api/slack/outbox/:id/fail` | Mark failed |
+| `POST /api/github/outbox/:id/ack` | Mark posted after gh comment |
+| `POST /api/github/outbox/:id/fail` | Mark failed |
 | `POST /api/slack/post` | Soft-disabled (410) |
 
 Command palette (⌘K) opens the launcher (not chat). Includes **Open Live setup**, **Switch to Live**, and **Load demo** (clears `control-v0`, forces Demo + Monday seed without wiping watch.json channels or inbox files).
@@ -509,8 +561,9 @@ Command palette (⌘K) opens the launcher (not chat). Includes **Open Live setup
 4. Start focus — Now quiets; badge may change without interrupting.
 5. Open Review — RFC finding, open RFC + PR mocks, Approve/Reject.
 6. Approve/edit Slack draft with explicit confirm -> outbox queue -> MCP poster -> ack.
-7. Return to Now — checkpoint updated.
+7. On a Live PR Review: Draft comment -> confirm -> github-outbox -> `./scripts/github-outbox-worker` -> ack.
+8. Return to Now — checkpoint updated.
 
 ## Explicit cuts
 
-Team surface, auth, org-wide GitHub / org-wide Slack, channels without PR-URL filter, webhooks-in-Control, NLP without URL, live Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological feed, agent builder / free-form prompt, GitHub comment outbox (chip 5), watch.autoReview policy, model-agnostic runner, Team/Mac/chat-home, baking seed as default dogfood, auto-merge, lorem, auto-send without confirm, Slack app / bot-token inside Next, GitHub App / PAT inside Control, raising external Needs-you cap without product call, chip 5 outbox, full IDE diff / Monaco / merge button.
+Team surface, auth, org-wide GitHub / org-wide Slack, channels without PR-URL filter, webhooks-in-Control, NLP without URL, live Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological feed, agent builder / free-form prompt, watch.autoReview policy, model-agnostic runner, Team/Mac/chat-home, baking seed as default dogfood, auto-merge, lorem, auto-send without confirm, Slack app / bot-token inside Next, GitHub App / PAT inside Control, raising external Needs-you cap without product call, multi-repo outbox UI, full IDE diff / Monaco / merge button, APPROVE/REQUEST_CHANGES review events from outbox (v1 comment-only).

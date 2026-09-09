@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# github-outbox-worker — drain Control GitHub comment outbox via local `gh`.
+#
+# Control holds NO GITHUB_TOKEN / PAT. This runs on the operator machine where
+# `gh` is already authenticated and posts a **comment-only** PR conversation
+# comment (issues API) — never APPROVE / REQUEST_CHANGES / merge.
+#
+# Usage:
+#   ./scripts/github-outbox-worker            # process pending once
+#   ./scripts/github-outbox-worker --watch    # poll every POLL_SECONDS
+#   ./scripts/github-outbox-worker --dry-run  # print actions; do not post/ack
+#
+# Env:
+#   CONTROL_BASE_URL   default http://localhost:3000
+#   POLL_SECONDS       default 5 (watch mode)
+#   DRY_RUN=1          same as --dry-run
+set -euo pipefail
+
+CONTROL_BASE_URL="${CONTROL_BASE_URL:-http://localhost:3000}"
+POLL_SECONDS="${POLL_SECONDS:-5}"
+DRY_RUN="${DRY_RUN:-0}"
+WATCH=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --watch) WATCH=1 ;;
+    --dry-run) DRY_RUN=1 ;;
+    --once) WATCH=0 ;;
+    -h|--help)
+      sed -n '2,20p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "Unknown arg: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "gh CLI required (operator auth). Control does not hold a PAT." >&2
+  exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 required" >&2
+  exit 1
+fi
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl required" >&2
+  exit 1
+fi
+
+OUTBOX_URL="${CONTROL_BASE_URL%/}/api/github/outbox"
+
+fail_item() {
+  local id="$1"
+  local err="$2"
+  local err_json
+  err_json="$(python3 -c 'import json,sys; print(json.dumps({"error": sys.argv[1][:500]}))' "$err")"
+  curl -sS -X POST "${OUTBOX_URL}/${id}/fail" \
+    -H 'Content-Type: application/json' \
+    -d "$err_json" >/dev/null || true
+}
+
+post_one() {
+  local id="$1"
+  local repo="$2"
+  local pr="$3"
+  local body_file="$4"
+
+  local owner repo_name
+  owner="${repo%%/*}"
+  repo_name="${repo#*/}"
+
+  # Comment-only: PR issue comment — NOT pulls/.../reviews (no approve event).
+  local api_path="repos/${owner}/${repo_name}/issues/${pr}/comments"
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "dry-run would-gh-api $api_path id=$id"
+    echo "--- body ---"
+    cat "$body_file"
+    echo "------------"
+    return 0
+  fi
+
+  local payload resp
+  payload="$(python3 -c 'import json,sys; print(json.dumps({"body": open(sys.argv[1], encoding="utf-8").read()}))' "$body_file")"
+
+  if ! resp="$(printf '%s' "$payload" | gh api "$api_path" -X POST --input - 2>&1)"; then
+    echo "gh api failed for $id: $resp" >&2
+    fail_item "$id" "$resp"
+    return 1
+  fi
+
+  local ack_json
+  if ! ack_json="$(python3 -c '
+import json,sys
+raw=sys.stdin.read()
+try:
+  data=json.loads(raw)
+except Exception as e:
+  print(json.dumps({"error": "bad gh response: "+str(e)}))
+  sys.exit(2)
+url=data.get("html_url") or data.get("url") or ""
+cid=data.get("id")
+out={"comment_url": url}
+if cid is not None:
+  out["comment_id"]=cid
+print(json.dumps(out))
+' <<<"$resp")"; then
+    echo "failed to parse gh response for $id" >&2
+    fail_item "$id" "failed to parse gh api response"
+    return 1
+  fi
+
+  curl -sS -X POST "${OUTBOX_URL}/${id}/ack" \
+    -H 'Content-Type: application/json' \
+    -d "$ack_json" >/dev/null
+  echo "acked $id $(python3 -c 'import json,sys; print(json.load(sys.stdin).get("comment_url",""))' <<<"$ack_json")"
+}
+
+drain_once() {
+  local list
+  if ! list="$(curl -sS "${OUTBOX_URL}?status=pending")"; then
+    echo "failed to list outbox at ${OUTBOX_URL}" >&2
+    return 1
+  fi
+
+  python3 -c '
+import json,sys,os,tempfile
+data=json.loads(sys.argv[1])
+items=data.get("items") or []
+for it in items:
+  if it.get("status")!="pending":
+    continue
+  id_=it.get("id") or ""
+  repo=it.get("repo") or ""
+  pr=it.get("pr")
+  body=it.get("body") or ""
+  if not id_ or not repo or not pr:
+    continue
+  fd, path = tempfile.mkstemp(prefix="gh-outbox-", suffix=".md")
+  os.write(fd, body.encode("utf-8"))
+  os.close(fd)
+  print(f"{id_}\t{repo}\t{pr}\t{path}")
+' "$list" | while IFS=$'\t' read -r id repo pr body_file; do
+    [[ -n "$id" ]] || continue
+    echo "posting $id → ${repo}#${pr}"
+    post_one "$id" "$repo" "$pr" "$body_file" || true
+    rm -f "$body_file"
+  done
+}
+
+if [[ "$WATCH" == "1" ]]; then
+  echo "watching ${OUTBOX_URL} every ${POLL_SECONDS}s (dry_run=${DRY_RUN})"
+  while true; do
+    drain_once || true
+    sleep "$POLL_SECONDS"
+  done
+else
+  drain_once
+fi

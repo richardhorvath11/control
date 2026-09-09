@@ -126,6 +126,12 @@ export interface ReviewItem {
   slackOutboxId?: string;
   /** Queue status mirrored from outbox until ack/fail. */
   slackQueueStatus?: "pending" | "posted" | "failed";
+  /** Filled after GitHub outbox poster acks the comment. */
+  postedGithubComment?: { url: string; id?: number };
+  /** Durable outbox id while awaiting GitHub gh/MCP poster (chip 5). */
+  githubOutboxId?: string;
+  /** Queue status mirrored from github-outbox until ack/fail. */
+  githubQueueStatus?: "pending" | "posted" | "failed";
   status: "pending" | "queued" | "approved" | "rejected" | "edited";
   agentId?: string;
 }

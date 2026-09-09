@@ -33,8 +33,12 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
   const rejectReview = useControlStore((s) => s.rejectReview);
   const editReviewDraft = useControlStore((s) => s.editReviewDraft);
   const pollSlackOutbox = useControlStore((s) => s.pollSlackOutbox);
+  const pollGithubOutbox = useControlStore((s) => s.pollGithubOutbox);
+  const openConfirm = useControlStore((s) => s.openConfirm);
+  const confirmPostGithub = useControlStore((s) => s.confirmPostGithub);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item?.draftText ?? "");
+  const [commentDraft, setCommentDraft] = useState(item?.draftText ?? "");
   const [selectedFinding, setSelectedFinding] = useState(
     item?.findings[0]?.id ?? null
   );
@@ -57,8 +61,22 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
     ) {
       pollSlackOutbox(item.id, item.slackOutboxId);
     }
+    if (
+      item?.status === "queued" &&
+      item.githubOutboxId &&
+      item.githubQueueStatus === "pending"
+    ) {
+      pollGithubOutbox(item.id, item.githubOutboxId);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item?.id, item?.status, item?.slackOutboxId, item?.slackQueueStatus]);
+  }, [
+    item?.id,
+    item?.status,
+    item?.slackOutboxId,
+    item?.slackQueueStatus,
+    item?.githubOutboxId,
+    item?.githubQueueStatus,
+  ]);
 
   // Chip 4: load gh snapshot for Live pr_review (Control reads disk via API).
   useEffect(() => {
@@ -130,6 +148,7 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
 
   useEffect(() => {
     setDraft(item?.draftText ?? "");
+    setCommentDraft(item?.draftText ?? "");
     setSelectedFinding(item?.findings[0]?.id ?? null);
   }, [item?.id, item?.draftText, item?.findings]);
 
@@ -139,6 +158,28 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
     item.findings.find((f) => f.id === selectedFinding) ?? item.findings[0];
   const isQueued = item.status === "queued";
   const queuePending = isQueued && item.slackQueueStatus !== "failed";
+  const githubQueuePending =
+    isQueued &&
+    Boolean(item.githubOutboxId) &&
+    item.githubQueueStatus !== "failed";
+  const githubTargetLabel = repoPr
+    ? `${repoPr.repo}#${repoPr.pr}`
+    : item.repo && item.pr
+      ? `${item.repo}#${item.pr}`
+      : "GitHub";
+
+  const reviewId = item.id;
+  const requestPostGithubComment = () => {
+    const body = commentDraft;
+    openConfirm({
+      title: "Post to GitHub?",
+      body,
+      confirmLabel: `Post comment to ${githubTargetLabel}`,
+      subtitle:
+        "Queues a durable outbox record for the local gh/MCP poster — comment-only (no approve/merge). Cancel leaves Review unchanged.",
+      onConfirm: () => confirmPostGithub(reviewId, body),
+    });
+  };
 
   const snapshot = snapState.status === "ok" ? snapState.snapshot : null;
   const headerTitle = snapshot?.title?.trim() || item.title;
@@ -497,6 +538,7 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                 <button
                   type="button"
                   className="btn-primary"
+                  disabled={githubQueuePending}
                   onClick={() => approveReview(item.id)}
                 >
                   Approve analysis
@@ -504,6 +546,7 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                 <button
                   type="button"
                   className="btn-danger"
+                  disabled={githubQueuePending}
                   onClick={() => rejectReview(item.id)}
                 >
                   Reject
@@ -529,28 +572,77 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                   ))}
               </div>
 
-              {/* Chip 5 stub — draft comment visible but disabled; do not fake a post */}
+
+              {/* Chip 5 — GitHub comment outbox (confirm-gated; no PAT in Control) */}
               {item.kind === "pr_review" ? (
                 <div className="border-t border-border pt-4 space-y-2">
                   <div className="text-[11px] uppercase tracking-wide text-muted">
                     Draft comment
                   </div>
+                  {githubQueuePending ? (
+                    <div className="rounded-lg border border-review/40 bg-[#161b28] px-3 py-2 text-[12px] leading-5 text-review">
+                      Queued for GitHub (awaiting poster)
+                      {item.githubOutboxId ? (
+                        <span className="ml-2 font-mono text-[11px] text-muted">
+                          {item.githubOutboxId}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {item.githubQueueStatus === "failed" &&
+                  item.status === "pending" ? (
+                    <div className="rounded-lg border border-blocked/40 bg-[#2a1816] px-3 py-2 text-[12px] leading-5 text-blocked">
+                      Outbox failed — review is pending again. Retry Post when
+                      ready.
+                    </div>
+                  ) : null}
+                  {item.postedGithubComment?.url ? (
+                    <div className="text-[11px] text-running">
+                      Posted{" "}
+                      <a
+                        href={item.postedGithubComment.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="hover:underline"
+                      >
+                        comment on GitHub ↗
+                      </a>
+                    </div>
+                  ) : null}
                   <textarea
-                    className="w-full min-h-[72px] rounded-lg border border-border bg-bg p-3 text-[13px] leading-5 text-muted opacity-60 cursor-not-allowed"
-                    disabled
-                    readOnly
-                    value=""
-                    placeholder="Draft GitHub comment — Chip 5"
-                    aria-label="Draft GitHub comment (Chip 5 — disabled)"
+                    className="w-full min-h-[96px] rounded-lg border border-border bg-bg p-3 text-[13px] leading-5 outline-none focus:border-review disabled:opacity-60 disabled:cursor-not-allowed"
+                    disabled={githubQueuePending || item.status === "approved"}
+                    value={commentDraft}
+                    onChange={(e) => setCommentDraft(e.target.value)}
+                    placeholder="Draft a PR comment (markdown) — posts only after confirm"
+                    aria-label="Draft GitHub comment"
                   />
-                  <button
-                    type="button"
-                    className="btn-secondary opacity-50 cursor-not-allowed"
-                    disabled
-                    title="Chip 5"
-                  >
-                    Post comment (Chip 5)
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    {githubQueuePending ? (
+                      <button type="button" className="btn-secondary" disabled>
+                        Queued…
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={
+                          item.status === "approved" ||
+                          item.status === "rejected" ||
+                          !commentDraft.trim() ||
+                          !repoPr
+                        }
+                        title={
+                          !repoPr
+                            ? "Need repo#pr to post"
+                            : "Confirm, then local gh posts comment-only"
+                        }
+                        onClick={requestPostGithubComment}
+                      >
+                        Post comment…
+                      </button>
+                    )}
+                  </div>
                 </div>
               ) : null}
             </section>
@@ -563,6 +655,7 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                 <button
                   type="button"
                   className="btn-primary"
+                  disabled={githubQueuePending}
                   onClick={() => approveReview(item.id)}
                 >
                   Approve analysis
@@ -570,32 +663,86 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                 <button
                   type="button"
                   className="btn-danger"
+                  disabled={githubQueuePending}
                   onClick={() => rejectReview(item.id)}
                 >
                   Reject
                 </button>
               </div>
-              <div className="border-t border-border pt-4 space-y-2">
-                <div className="text-[11px] uppercase tracking-wide text-muted">
-                  Draft comment
+
+              {/* Chip 5 — GitHub comment outbox (confirm-gated; no PAT in Control) */}
+              {item.kind === "pr_review" ? (
+                <div className="border-t border-border pt-4 space-y-2">
+                  <div className="text-[11px] uppercase tracking-wide text-muted">
+                    Draft comment
+                  </div>
+                  {githubQueuePending ? (
+                    <div className="rounded-lg border border-review/40 bg-[#161b28] px-3 py-2 text-[12px] leading-5 text-review">
+                      Queued for GitHub (awaiting poster)
+                      {item.githubOutboxId ? (
+                        <span className="ml-2 font-mono text-[11px] text-muted">
+                          {item.githubOutboxId}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {item.githubQueueStatus === "failed" &&
+                  item.status === "pending" ? (
+                    <div className="rounded-lg border border-blocked/40 bg-[#2a1816] px-3 py-2 text-[12px] leading-5 text-blocked">
+                      Outbox failed — review is pending again. Retry Post when
+                      ready.
+                    </div>
+                  ) : null}
+                  {item.postedGithubComment?.url ? (
+                    <div className="text-[11px] text-running">
+                      Posted{" "}
+                      <a
+                        href={item.postedGithubComment.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="hover:underline"
+                      >
+                        comment on GitHub ↗
+                      </a>
+                    </div>
+                  ) : null}
+                  <textarea
+                    className="w-full min-h-[96px] rounded-lg border border-border bg-bg p-3 text-[13px] leading-5 outline-none focus:border-review disabled:opacity-60 disabled:cursor-not-allowed"
+                    disabled={githubQueuePending || item.status === "approved"}
+                    value={commentDraft}
+                    onChange={(e) => setCommentDraft(e.target.value)}
+                    placeholder="Draft a PR comment (markdown) — posts only after confirm"
+                    aria-label="Draft GitHub comment"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    {githubQueuePending ? (
+                      <button type="button" className="btn-secondary" disabled>
+                        Queued…
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={
+                          item.status === "approved" ||
+                          item.status === "rejected" ||
+                          !commentDraft.trim() ||
+                          !repoPr
+                        }
+                        title={
+                          !repoPr
+                            ? "Need repo#pr to post"
+                            : "Confirm, then local gh posts comment-only"
+                        }
+                        onClick={requestPostGithubComment}
+                      >
+                        Post comment…
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <textarea
-                  className="w-full min-h-[72px] rounded-lg border border-border bg-bg p-3 text-[13px] leading-5 text-muted opacity-60 cursor-not-allowed"
-                  disabled
-                  readOnly
-                  value=""
-                  placeholder="Draft GitHub comment — Chip 5"
-                  aria-label="Draft GitHub comment (Chip 5 — disabled)"
-                />
-                <button
-                  type="button"
-                  className="btn-secondary opacity-50 cursor-not-allowed"
-                  disabled
-                  title="Chip 5"
-                >
-                  Post comment (Chip 5)
-                </button>
-              </div>
+              ) : null}
+
             </section>
           ) : null}
         </>

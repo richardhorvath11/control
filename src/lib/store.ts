@@ -211,6 +211,15 @@ interface ControlState {
   applySlackOutboxFailed: (id: string, error?: string) => void;
   pollSlackOutbox: (reviewId: string, outboxId: string) => void;
 
+  /** Chip 5: confirm-gated GitHub comment outbox (no PAT in Control). */
+  confirmPostGithub: (id: string, body: string) => Promise<void>;
+  applyGithubOutboxPosted: (
+    id: string,
+    comment: { url?: string; id?: number }
+  ) => void;
+  applyGithubOutboxFailed: (id: string, error?: string) => void;
+  pollGithubOutbox: (reviewId: string, outboxId: string) => void;
+
   approveAgentPermission: (agentId: string) => void;
   dismissAgentPermission: (agentId: string) => void;
 
@@ -1684,6 +1693,267 @@ export const useControlStore = create<ControlState>()(
           subtitle:
             error ||
             "MCP poster reported failure. Review is pending again — nothing was posted.",
+          onConfirm: () => get().closeConfirm(),
+        });
+      },
+
+      confirmPostGithub: async (id, body) => {
+        const item = get().reviewQueue.find((r) => r.id === id);
+        if (!item || item.kind !== "pr_review") return;
+        if (item.status !== "pending" && item.status !== "queued") return;
+        if (item.status === "queued") return;
+
+        const textBody = typeof body === "string" ? body : "";
+        const trimmed = textBody.trim();
+        if (!trimmed) {
+          const modal = get().confirmModal;
+          if (modal) {
+            set({
+              confirmModal: {
+                ...modal,
+                loading: false,
+                error: "Comment body is empty — nothing queued.",
+              },
+            });
+          }
+          return;
+        }
+
+        const repo =
+          item.repo ||
+          (item.title.match(/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#\d+/) ||
+            [])[1] ||
+          "";
+        const pr =
+          item.pr && item.pr > 0
+            ? item.pr
+            : (() => {
+                const m = item.title.match(/#(\d+)/);
+                return m ? parseInt(m[1], 10) : 0;
+              })();
+
+        const modal = get().confirmModal;
+        if (modal) {
+          set({
+            confirmModal: { ...modal, loading: true, error: undefined },
+          });
+        }
+
+        try {
+          const res = await fetch("/api/github/outbox", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              body: trimmed,
+              repo,
+              pr,
+              reviewItemId: id,
+            }),
+          });
+
+          let data: {
+            error?: string;
+            item?: { id: string; status?: string };
+          } = {};
+          try {
+            data = (await res.json()) as typeof data;
+          } catch {
+            data = {};
+          }
+
+          // User cancelled while in flight — do not apply success or reopen.
+          if (!get().confirmModal) return;
+
+          if (!res.ok || !data.item?.id) {
+            const current = get().confirmModal;
+            if (current) {
+              set({
+                confirmModal: {
+                  ...current,
+                  loading: false,
+                  error:
+                    data.error ||
+                    `Outbox write failed (HTTP ${res.status}). Review stays pending.`,
+                },
+              });
+            }
+            return;
+          }
+
+          const outboxId = data.item.id;
+
+          // Queued — close modal; do NOT mark approved until poster ack.
+          set({
+            reviewQueue: get().reviewQueue.map((r) =>
+              r.id === id
+                ? {
+                    ...r,
+                    draftText: trimmed,
+                    status: "queued",
+                    githubOutboxId: outboxId,
+                    githubQueueStatus: "pending",
+                  }
+                : r
+            ),
+            confirmModal: null,
+          });
+
+          get().pollGithubOutbox(id, outboxId);
+        } catch (err) {
+          if (!get().confirmModal) return;
+          const current = get().confirmModal;
+          if (current) {
+            set({
+              confirmModal: {
+                ...current,
+                loading: false,
+                error:
+                  err instanceof Error
+                    ? err.message
+                    : "Network error writing GitHub outbox. Review stays pending.",
+              },
+            });
+          }
+        }
+      },
+
+      pollGithubOutbox: (reviewId, outboxId) => {
+        let attempts = 0;
+        const maxAttempts = 120; // ~4 min at 2s
+        const tick = async () => {
+          attempts += 1;
+          const item = get().reviewQueue.find((r) => r.id === reviewId);
+          if (!item || item.githubOutboxId !== outboxId) return;
+          if (item.status === "approved" || item.status === "rejected") return;
+          if (
+            item.githubQueueStatus === "posted" ||
+            item.githubQueueStatus === "failed"
+          )
+            return;
+
+          try {
+            const res = await fetch(`/api/github/outbox/${outboxId}`);
+            if (res.ok) {
+              const data = (await res.json()) as {
+                item?: {
+                  status?: string;
+                  comment_url?: string;
+                  comment_id?: number;
+                  error?: string;
+                };
+              };
+              const ob = data.item;
+              if (ob?.status === "posted") {
+                get().applyGithubOutboxPosted(reviewId, {
+                  url: ob.comment_url,
+                  id: ob.comment_id,
+                });
+                return;
+              }
+              if (ob?.status === "failed") {
+                get().applyGithubOutboxFailed(reviewId, ob.error);
+                return;
+              }
+            }
+          } catch {
+            // keep polling
+          }
+
+          if (attempts < maxAttempts) {
+            window.setTimeout(() => {
+              void tick();
+            }, 2000);
+          }
+        };
+        window.setTimeout(() => {
+          void tick();
+        }, 1500);
+      },
+
+      applyGithubOutboxPosted: (id, comment) => {
+        const item = get().reviewQueue.find((r) => r.id === id);
+        if (!item) return;
+        if (item.status === "approved") return;
+
+        set({
+          reviewQueue: get().reviewQueue.map((r) =>
+            r.id === id
+              ? {
+                  ...r,
+                  status: "approved",
+                  githubQueueStatus: "posted",
+                  postedGithubComment: comment.url
+                    ? {
+                        url: comment.url,
+                        id: comment.id,
+                      }
+                    : r.postedGithubComment,
+                }
+              : r
+          ),
+        });
+
+        if (item.workstreamId) {
+          const ws = get().workstreams.find((w) => w.id === item.workstreamId);
+          if (ws) {
+            const target =
+              item.repo && item.pr
+                ? `${item.repo}#${item.pr}`
+                : item.title;
+            get().updateCheckpoint(
+              item.workstreamId,
+              ws.checkpoint +
+                ` Posted GitHub comment on ${target}` +
+                (comment.url ? ` (${comment.url})` : "") +
+                `.`
+            );
+            set({
+              workstreams: get().workstreams.map((w) =>
+                w.id === item.workstreamId
+                  ? {
+                      ...w,
+                      changed: [
+                        `Posted GitHub PR comment (outbox → gh).`,
+                        ...w.changed,
+                      ],
+                    }
+                  : w
+              ),
+            });
+          }
+        }
+
+        const remaining = get().reviewQueue.filter(
+          (r) =>
+            (r.status === "pending" || r.status === "queued") && r.id !== id
+        );
+        set({ selectedReviewId: remaining[0]?.id ?? null });
+        get().recomputeMode();
+      },
+
+      applyGithubOutboxFailed: (id, error) => {
+        const item = get().reviewQueue.find((r) => r.id === id);
+        if (!item) return;
+        // Fail closed: return to pending so the user can retry Post.
+        set({
+          reviewQueue: get().reviewQueue.map((r) =>
+            r.id === id
+              ? {
+                  ...r,
+                  status: "pending",
+                  githubQueueStatus: "failed",
+                  // keep githubOutboxId for diagnostics
+                }
+              : r
+          ),
+        });
+        get().openConfirm({
+          title: "GitHub outbox failed",
+          body: item.draftText ?? "",
+          confirmLabel: "Dismiss",
+          subtitle:
+            error ||
+            "Poster reported failure. Review is pending again — nothing was posted.",
           onConfirm: () => get().closeConfirm(),
         });
       },
