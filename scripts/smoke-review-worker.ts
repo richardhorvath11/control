@@ -546,16 +546,18 @@ JSON
   };
 
   try {
-    // Concurrent claim: only one winner
-    const [c1, c2] = await Promise.all([
-      claimNextReviewJob("w1"),
-      claimNextReviewJob("w2"),
-    ]);
-    const won = [c1, c2].filter(Boolean);
-    assert(won.length === 1, "two concurrent claims → one job");
+    // BUG-V08C1-1 stress: many concurrent claims → exactly one winner
+    const STRESS_N = 24;
+    const stress = await Promise.all(
+      Array.from({ length: STRESS_N }, (_, i) =>
+        claimNextReviewJob(`stress-w${i}`)
+      )
+    );
+    const won = stress.filter(Boolean);
+    assert(won.length === 1, `stress ${STRESS_N} concurrent claims → exactly one job (got ${won.length})`);
     assert(won[0]?.job_id === jobId, "claimed the smoke job");
-    const emptyClaim = await claimNextReviewJob("w3");
-    assert(emptyClaim === null, "second claim empty (204 shape)");
+    const emptyClaim = await claimNextReviewJob("w-after");
+    assert(emptyClaim === null, "post-stress claim empty (204 shape)");
 
     const bad = await completeReviewJob(jobId, { schema: "nope" });
     assert(!bad.ok && bad.status === 400, "invalid result body → 4xx");
@@ -617,6 +619,59 @@ JSON
 
     const httpSrv = await startJobsHttpServer();
     const env = { ...envBase, CONTROL_BASE_URL: httpSrv.url };
+
+    // BUG-V08C1-1 HTTP stress: many POST /claim → one 200, rest 204
+    {
+      const jobHttp = `rj-smoke-http-stress-${Date.now().toString(36)}`;
+      await enqueueReviewJob({
+        job_id: jobHttp,
+        repo: "richardhorvath11/battle-buddy",
+        pr: 32,
+        provenance: [],
+      });
+      const N = 20;
+      const posts = await Promise.all(
+        Array.from({ length: N }, (_, i) =>
+          fetch(`${httpSrv.url}/api/review/jobs/claim`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ worker_id: `http-stress-${i}` }),
+          }).then(async (r) => ({
+            status: r.status,
+            body: r.status === 204 ? null : await r.json(),
+          }))
+        )
+      );
+      const ok200 = posts.filter((p) => p.status === 200);
+      const empty204 = posts.filter((p) => p.status === 204);
+      assert(
+        ok200.length === 1,
+        `HTTP stress: exactly one 200 (got ${ok200.length})`
+      );
+      assert(
+        empty204.length === N - 1,
+        `HTTP stress: rest 204 (got ${empty204.length}/${N - 1})`
+      );
+      const claimedId =
+        ok200[0] &&
+        typeof ok200[0].body === "object" &&
+        ok200[0].body &&
+        (ok200[0].body as { job?: { job_id?: string } }).job?.job_id;
+      assert(claimedId === jobHttp, "HTTP stress claimed the stress job");
+      // release so later --once tests are not blocked by this claim
+      await failReviewJob(jobHttp, "stress cleanup");
+      for (const f of [
+        path.join(REVIEW_JOBS_DIR, `${jobHttp.replace(/[^a-zA-Z0-9._-]/g, "_")}.json`),
+        path.join(REVIEW_JOBS_DIR, `${jobHttp.replace(/[^a-zA-Z0-9._-]/g, "_")}.claim.json`),
+        path.join(REVIEW_JOBS_DIR, `${jobHttp.replace(/[^a-zA-Z0-9._-]/g, "_")}.failed.json`),
+      ]) {
+        try {
+          fs.unlinkSync(f);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
 
     // Fresh job for worker --once
     const jobW = `rj-smoke-http-${Date.now().toString(36)}`;

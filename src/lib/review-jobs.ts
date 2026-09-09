@@ -199,33 +199,71 @@ function tryWxClaim(jobId: string, rec: ReviewJobClaimRecord): boolean {
   }
 }
 
+/** In-process claim queue (Next.js localhost / single process). */
+const claimLockGlobal = globalThis as typeof globalThis & {
+  __controlReviewClaimQueue?: Promise<void>;
+};
+
+function withReviewClaimLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = claimLockGlobal.__controlReviewClaimQueue ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  claimLockGlobal.__controlReviewClaimQueue = prev.then(() => gate);
+  return prev
+    .catch(() => undefined)
+    .then(fn)
+    .finally(() => {
+      release();
+    });
+}
+
 /**
  * Atomically claim the oldest pending job. Returns the job or null (204).
+ * Serialized + exclusive wx; never unlink an active/fresh claim.
+ * Expired leases are reclaimed only under the lock after re-read.
  */
 export async function claimNextReviewJob(
   workerId?: string
 ): Promise<ControlReviewJobV1 | null> {
-  await ensureReviewJobsDir();
-  const worker_id = defaultWorkerId(workerId);
-  const entries = await listJobEntries();
-  for (const entry of entries) {
-    const status = await getReviewJobStatus(entry.jobId);
-    if (status !== "pending") continue;
-    await unlinkQuiet(reviewJobClaimStatePath(entry.jobId));
-    const rec: ReviewJobClaimRecord = {
-      worker_id,
-      claimed_at: new Date().toISOString(),
-      lease_until: leaseUntil(),
-    };
-    if (!tryWxClaim(entry.jobId, rec)) continue;
-    const job = await readReviewJob(entry.jobId);
-    if (!job) {
-      await unlinkQuiet(reviewJobClaimStatePath(entry.jobId));
-      continue;
+  return withReviewClaimLock(async () => {
+    await ensureReviewJobsDir();
+    const worker_id = defaultWorkerId(workerId);
+    const entries = await listJobEntries();
+    for (const entry of entries) {
+      // Terminal states — skip
+      const result = await readReviewResultFile(entry.jobId);
+      if (result.ok) continue;
+      const fail = await readFailRecord(entry.jobId);
+      if (fail) continue;
+
+      // Re-read claim under the lock (BUG-V08C1-1: no unconditional unlink)
+      const existing = await readClaimRecord(entry.jobId);
+      if (claimActive(existing)) {
+        // Fresh/active lease — NEVER unlink; skip for other workers
+        continue;
+      }
+      if (existing) {
+        // Expired only: reclaim under lock after re-read
+        await unlinkQuiet(reviewJobClaimStatePath(entry.jobId));
+      }
+
+      const rec: ReviewJobClaimRecord = {
+        worker_id,
+        claimed_at: new Date().toISOString(),
+        lease_until: leaseUntil(),
+      };
+      if (!tryWxClaim(entry.jobId, rec)) continue;
+      const job = await readReviewJob(entry.jobId);
+      if (!job) {
+        await unlinkQuiet(reviewJobClaimStatePath(entry.jobId));
+        continue;
+      }
+      return job;
     }
-    return job;
-  }
-  return null;
+    return null;
+  });
 }
 
 export async function heartbeatReviewJob(
