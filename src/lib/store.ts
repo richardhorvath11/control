@@ -41,7 +41,7 @@ import {
   NO_REVIEW_BACKEND_DETAIL,
   buildReviewItemFromResult,
   type ControlReviewResultV1,
-} from "./review-runner";
+} from "./review-contracts";
 
 const initial = seed as SeedData;
 
