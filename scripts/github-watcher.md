@@ -14,8 +14,7 @@ Control holds **no** GitHub token. This host runs `gh` (authenticated) and POSTs
 | `repo` | `richardhorvath11/battle-buddy` |
 | `pr` | `32` |
 | `workstreamId` | `ws-cred` |
-| `slackPrChannels` | multi-channel list (see `watch.example.json`); legacy scalar still loads |
-| `slackPrChannelId` | derived first channel (back-compat) |
+| `slackWatch` | surfaces + includeDms/Mpims (see `watch.example.json` / `scripts/slack-watch.md`) |
 | `teams` | **`[]` (intentional).** Team/CODEOWNERS `review.requested` is never emitted until operators list 1–3 slugs. |
 
 ## One tick
@@ -70,7 +69,7 @@ Event shapes match `src/lib/github-inbox.ts` (`GitHubInboxEvent`). Shared cap st
   "repo": "richardhorvath11/battle-buddy",
   "pr": 32,
   "workstreamId": "ws-cred",
-  "slackPrChannelId": "C0BVCSA4T2P",
+  "slackWatchSurfaceId": "C0BVCSA4T2P",
   "watch_teams": [],
   "head_sha": "19f610a…",
   "ci_conclusion": "SUCCESS",
@@ -135,7 +134,7 @@ Smoke (unit): `npx tsx scripts/smoke-pr-follows.ts`.
 
 ## Slack companion
 
-See `scripts/slack-pr-watcher.md` and `scripts/slack-pr-inbox-post.sh`. Control holds no Slack token either.
+See `scripts/slack-watch.md` and `scripts/slack-pr-inbox-post.sh`. Control holds no Slack token either.
 
 ## Out of chip
 

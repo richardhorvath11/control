@@ -3,6 +3,7 @@ import {
   ensureWatchConfig,
   isWatchConfigured,
   normalizeWatch,
+  validateSlackWatch,
   writeWatchConfig,
   type WatchConfig,
   type WatchConfigInput,
@@ -16,18 +17,15 @@ function watchPayload(watch: WatchConfig) {
     pr: watch.pr,
     workstreamId: watch.workstreamId,
     teams: watch.teams,
-    slackPrChannels: watch.slackPrChannels,
-    /** Derived first-channel id (back-compat). */
-    slackPrChannelId: watch.slackPrChannelId,
-    slackPrChannelName: watch.slackPrChannelName,
-    slackChannelCount: watch.slackPrChannels.length,
+    slackWatch: watch.slackWatch,
+    surfaceCount: watch.slackWatch.surfaces.length,
     configured: isWatchConfigured(watch),
   };
 }
 
 /**
- * GET /api/watch — current `.control/watch.json` (normalized multi-channel).
- * Legacy scalar slackPrChannelId still loads as a one-element list.
+ * GET /api/watch — current `.control/watch.json` (slackWatch only).
+ * Legacy slackPrChannels / scalars one-shot migrate on ensureWatchConfig.
  */
 export async function GET() {
   try {
@@ -41,9 +39,8 @@ export async function GET() {
 }
 
 /**
- * PUT /api/watch — persist BYO Live setup (repo, optional pr, teams, channels).
- * Accepts slackPrChannels[{id,name?}] or slackPrChannelIds:string[] or legacy
- * scalar. Demo / Load demo never calls this — channel list on disk is preserved.
+ * PUT /api/watch — persist BYO Live setup (repo, optional pr, teams, slackWatch).
+ * Demo / Load demo never calls this — watch on disk is preserved.
  */
 export async function PUT(req: NextRequest) {
   let body: unknown;
@@ -57,21 +54,6 @@ export async function PUT(req: NextRequest) {
   }
 
   const input = body as WatchConfigInput;
-  const hasChannels =
-    (Array.isArray(input.slackPrChannels) && input.slackPrChannels.length > 0) ||
-    (Array.isArray(input.slackPrChannelIds) &&
-      input.slackPrChannelIds.length > 0) ||
-    (typeof input.slackPrChannelId === "string" &&
-      !!input.slackPrChannelId.trim());
-  if (!hasChannels) {
-    return NextResponse.json(
-      {
-        error:
-          "Provide slackPrChannels (or slackPrChannelIds / legacy slackPrChannelId) with ≥1 channel",
-      },
-      { status: 400 }
-    );
-  }
   if (typeof input.repo !== "string" || !input.repo.trim()) {
     return NextResponse.json(
       { error: "repo is required (owner/name)" },
@@ -89,16 +71,35 @@ export async function PUT(req: NextRequest) {
           ? input.workstreamId
           : existing.workstreamId,
       teams: Array.isArray(input.teams) ? input.teams : existing.teams,
+      slackWatch: input.slackWatch ?? existing.slackWatch,
+      // Allow one-shot migrate body forms on PUT too (then persist clean).
       slackPrChannels: input.slackPrChannels,
       slackPrChannelIds: input.slackPrChannelIds,
       slackPrChannelId: input.slackPrChannelId,
       slackPrChannelName: input.slackPrChannelName,
     });
+
+    if (!isWatchConfigured(next)) {
+      return NextResponse.json(
+        {
+          error:
+            "Provide slackWatch with ≥1 surface, or includeDms/includeMpims (myUserId required when either include* is true)",
+        },
+        { status: 400 }
+      );
+    }
+
+    const swErr = validateSlackWatch(next.slackWatch);
+    if (swErr) {
+      return NextResponse.json({ error: swErr }, { status: 400 });
+    }
+
     const watch = await writeWatchConfig(next);
     return NextResponse.json({ ok: true, watch: watchPayload(watch) });
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to write watch config";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const status = /myUserId|slackWatch/i.test(message) ? 400 : 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

@@ -58,11 +58,31 @@ export interface GitHubInboxEvent {
   requested_user?: string;
 }
 
-/** One Slack channel watched for PR-link → Needs-you (V0.7 chip 2). */
-export interface SlackPrChannel {
+/** Slack conversation kind on a watch surface (V0.8 chip 2). */
+export type SlackSurfaceKind = "channel" | "im" | "mpim";
+
+/** One Slack surface (channel / IM / MPIM) under slackWatch. */
+export interface SlackWatchSurface {
   id: string;
-  /** Display name for Needs-you why (e.g. #pr-reviews) */
+  /** Display name (e.g. #control-e2e, DM Alice) */
   name?: string;
+  kind: SlackSurfaceKind;
+  /**
+   * When true, PR URLs may POST as pr_link → review-ask Needs-you.
+   * Default true for migrated PR channels; set false for listen-only surfaces.
+   */
+  prLinks: boolean;
+}
+
+/** Broad Slack watch config (surfaces + optional DM/MPIM fetch). No Slack token in Control. */
+export interface SlackWatch {
+  surfaces: SlackWatchSurface[];
+  /** When true, watcher fetches IMs involving myUserId via Slack MCP. */
+  includeDms: boolean;
+  /** When true, watcher fetches MPIMs involving myUserId via Slack MCP. */
+  includeMpims: boolean;
+  /** Required when includeDms or includeMpims is true. */
+  myUserId?: string;
 }
 
 export interface WatchConfig {
@@ -71,15 +91,8 @@ export interface WatchConfig {
   workstreamId: string;
   /** Team/CODEOWNERS slugs that may create Needs-you on review.requested */
   teams: string[];
-  /** Slack channels watched for PR-link → Needs-you (multi-channel; ≥1 for Live). */
-  slackPrChannels: SlackPrChannel[];
-  /**
-   * Derived: first channel id (back-compat for callers / scripts that still
-   * read a scalar). Prefer `slackPrChannels`.
-   */
-  slackPrChannelId: string;
-  /** Derived: first channel name (back-compat). Prefer `slackPrChannels`. */
-  slackPrChannelName?: string;
+  /** Broad Slack watch (surfaces + DM/MPIM flags). Replaces slackPrChannels. */
+  slackWatch: SlackWatch;
 }
 
 export type AttentionRouting = "now" | "fyi" | "skip";
@@ -146,12 +159,24 @@ const DEFAULT_WATCH: WatchConfig = {
   pr: 32,
   workstreamId: "ws-cred",
   teams: [],
-  slackPrChannels: [
-    { id: "C0BVCSA4T2P", name: "#control-e2e" },
-    { id: "C0BINFRA000", name: "#infra-prs" },
-  ],
-  slackPrChannelId: "C0BVCSA4T2P",
-  slackPrChannelName: "#control-e2e",
+  slackWatch: {
+    surfaces: [
+      {
+        id: "C0BVCSA4T2P",
+        name: "#control-e2e",
+        kind: "channel",
+        prLinks: true,
+      },
+      {
+        id: "C0BINFRA000",
+        name: "#infra-prs",
+        kind: "channel",
+        prLinks: true,
+      },
+    ],
+    includeDms: false,
+    includeMpims: false,
+  },
 };
 
 function safeId(id: string): boolean {
@@ -179,7 +204,12 @@ export async function ensureWatchConfig(): Promise<WatchConfig> {
   try {
     const raw = await fs.readFile(WATCH_PATH, "utf8");
     const parsed = JSON.parse(raw) as WatchConfigInput;
-    return normalizeWatch(parsed);
+    const watch = normalizeWatch(parsed);
+    // One-shot clean migrate: drop slackPrChannels / scalar keys from disk.
+    if (hasLegacySlackKeys(parsed)) {
+      return writeWatchConfig(watch);
+    }
+    return watch;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== "ENOENT") throw err;
@@ -197,18 +227,49 @@ export async function ensureWatchConfig(): Promise<WatchConfig> {
   return writeWatchConfig(watch);
 }
 
-/** Raw on-disk / API body before normalize (accepts legacy scalars). */
+/**
+ * Raw on-disk / API body before normalize.
+ * Accepts legacy slackPrChannels / scalars for one-shot migrate only (not kept).
+ */
 export type WatchConfigInput = Partial<WatchConfig> & {
-  /** Alternate list form: ids only (names optional / omitted). */
+  /** @deprecated one-shot migrate → slackWatch.surfaces */
+  slackPrChannels?: { id?: string; name?: string }[];
+  /** @deprecated one-shot migrate → slackWatch.surfaces */
   slackPrChannelIds?: string[];
+  /** @deprecated one-shot migrate → slackWatch.surfaces */
+  slackPrChannelId?: string;
+  /** @deprecated one-shot migrate → slackWatch.surfaces */
+  slackPrChannelName?: string;
 };
 
 function channelIdOk(id: string): boolean {
   return /^[A-Z0-9][A-Z0-9_-]{0,30}$/i.test(id.trim());
 }
 
-function normalizeSlackChannels(input: WatchConfigInput | null): SlackPrChannel[] {
-  const out: SlackPrChannel[] = [];
+function userIdOk(id: string): boolean {
+  return /^[UW][A-Z0-9][A-Z0-9_-]{0,30}$/i.test(id.trim());
+}
+
+function parseSurfaceKind(raw: unknown): SlackSurfaceKind {
+  if (raw === "im" || raw === "mpim" || raw === "channel") return raw;
+  return "channel";
+}
+
+/** True when on-disk/API body still has pre-slackWatch keys (migrate + delete). */
+export function hasLegacySlackKeys(
+  input: WatchConfigInput | Record<string, unknown> | null | undefined
+): boolean {
+  if (!input || typeof input !== "object") return false;
+  return (
+    "slackPrChannels" in input ||
+    "slackPrChannelIds" in input ||
+    "slackPrChannelId" in input ||
+    "slackPrChannelName" in input
+  );
+}
+
+function migrateLegacyToSurfaces(input: WatchConfigInput): SlackWatchSurface[] {
+  const out: SlackWatchSurface[] = [];
   const seen = new Set<string>();
   const push = (idRaw: unknown, nameRaw?: unknown) => {
     if (typeof idRaw !== "string" || !idRaw.trim()) return;
@@ -219,52 +280,148 @@ function normalizeSlackChannels(input: WatchConfigInput | null): SlackPrChannel[
       typeof nameRaw === "string" && nameRaw.trim()
         ? nameRaw.trim()
         : undefined;
-    out.push(name ? { id, name } : { id });
+    out.push({
+      id,
+      ...(name ? { name } : {}),
+      kind: "channel",
+      prLinks: true,
+    });
   };
 
-  if (Array.isArray(input?.slackPrChannels)) {
-    for (const ch of input!.slackPrChannels) {
+  if (Array.isArray(input.slackPrChannels)) {
+    for (const ch of input.slackPrChannels) {
       if (!ch || typeof ch !== "object") continue;
-      push((ch as SlackPrChannel).id, (ch as SlackPrChannel).name);
+      push(ch.id, ch.name);
     }
   }
-  if (out.length === 0 && Array.isArray(input?.slackPrChannelIds)) {
-    for (const id of input!.slackPrChannelIds) push(id);
+  if (out.length === 0 && Array.isArray(input.slackPrChannelIds)) {
+    for (const id of input.slackPrChannelIds) push(id);
   }
-  // Legacy scalar → one-element list
-  if (out.length === 0 && typeof input?.slackPrChannelId === "string") {
+  if (out.length === 0 && typeof input.slackPrChannelId === "string") {
     push(input.slackPrChannelId, input.slackPrChannelName);
-  }
-  if (out.length === 0) {
-    return DEFAULT_WATCH.slackPrChannels.map((c) => ({ ...c }));
   }
   return out;
 }
 
-/**
- * Watch is "configured" for Live default when repo is non-empty and ≥1 Slack
- * channel is listed. Fixtures/seed stay for internal test only.
- */
-export function isWatchConfigured(watch: Pick<WatchConfig, "repo" | "slackPrChannels">): boolean {
-  return !!watch.repo.trim() && watch.slackPrChannels.length >= 1;
+function normalizeSlackWatch(input: WatchConfigInput | null): SlackWatch {
+  const raw = input?.slackWatch;
+  const surfaces: SlackWatchSurface[] = [];
+  const seen = new Set<string>();
+
+  if (raw && typeof raw === "object" && Array.isArray(raw.surfaces)) {
+    for (const s of raw.surfaces) {
+      if (!s || typeof s !== "object") continue;
+      const id = typeof s.id === "string" ? s.id.trim() : "";
+      if (!id || !channelIdOk(id) || seen.has(id)) continue;
+      seen.add(id);
+      const name =
+        typeof s.name === "string" && s.name.trim() ? s.name.trim() : undefined;
+      const kind = parseSurfaceKind(s.kind);
+      const prLinks = typeof s.prLinks === "boolean" ? s.prLinks : true;
+      surfaces.push({
+        id,
+        ...(name ? { name } : {}),
+        kind,
+        prLinks,
+      });
+    }
+  }
+
+  // One-shot migrate when slackWatch.surfaces empty / missing
+  if (surfaces.length === 0 && input && hasLegacySlackKeys(input)) {
+    for (const s of migrateLegacyToSurfaces(input)) {
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
+      surfaces.push(s);
+    }
+  }
+
+  if (surfaces.length === 0 && !raw) {
+    // No slackWatch and no legacy → default surfaces
+    return {
+      surfaces: DEFAULT_WATCH.slackWatch.surfaces.map((s) => ({ ...s })),
+      includeDms: false,
+      includeMpims: false,
+    };
+  }
+
+  const includeDms = raw?.includeDms === true;
+  const includeMpims = raw?.includeMpims === true;
+  let myUserId: string | undefined;
+  if (typeof raw?.myUserId === "string" && raw.myUserId.trim()) {
+    const uid = raw.myUserId.trim();
+    if (userIdOk(uid)) myUserId = uid;
+  }
+
+  return {
+    surfaces,
+    includeDms,
+    includeMpims,
+    ...(myUserId ? { myUserId } : {}),
+  };
 }
 
-/** Serialize for disk / API — multi-channel shape (no legacy scalars required). */
+/**
+ * includeDms / includeMpims require myUserId (validation error).
+ * Watcher must also fail-closed if this throws / returns error.
+ */
+export function validateSlackWatch(sw: SlackWatch): string | null {
+  if ((sw.includeDms || sw.includeMpims) && !sw.myUserId?.trim()) {
+    return "slackWatch.myUserId is required when includeDms or includeMpims is true";
+  }
+  if (sw.myUserId && !userIdOk(sw.myUserId)) {
+    return "slackWatch.myUserId must look like a Slack user id (U… / W…)";
+  }
+  for (const s of sw.surfaces) {
+    if (!channelIdOk(s.id)) {
+      return `Invalid slackWatch.surfaces id: ${s.id}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Watch is "configured" for Live when repo is set and at least one surface
+ * or DM/MPIM include flag is on. Fixtures/seed stay for internal test only.
+ */
+export function isWatchConfigured(
+  watch: Pick<WatchConfig, "repo" | "slackWatch">
+): boolean {
+  const sw = watch.slackWatch;
+  return (
+    !!watch.repo.trim() &&
+    (sw.surfaces.length >= 1 || sw.includeDms || sw.includeMpims)
+  );
+}
+
+/** Serialize for disk / API — slackWatch only (no legacy keys). */
 export function serializeWatch(watch: WatchConfig): Record<string, unknown> {
+  const sw = watch.slackWatch;
+  const slackWatch: Record<string, unknown> = {
+    surfaces: sw.surfaces.map((s) => ({
+      id: s.id,
+      ...(s.name ? { name: s.name } : {}),
+      kind: s.kind,
+      prLinks: s.prLinks,
+    })),
+    includeDms: sw.includeDms === true,
+    includeMpims: sw.includeMpims === true,
+  };
+  if (sw.myUserId) slackWatch.myUserId = sw.myUserId;
   return {
     repo: watch.repo,
     pr: watch.pr,
     workstreamId: watch.workstreamId,
     teams: watch.teams,
-    slackPrChannels: watch.slackPrChannels.map((c) =>
-      c.name ? { id: c.id, name: c.name } : { id: c.id }
-    ),
+    slackWatch,
   };
 }
 
 export async function writeWatchConfig(watch: WatchConfig): Promise<WatchConfig> {
   await ensureControlDir();
   const normalized = normalizeWatch(watch);
+  const err = validateSlackWatch(normalized.slackWatch);
+  if (err) throw new Error(err);
   const tmp = `${WATCH_PATH}.tmp`;
   await fs.writeFile(
     tmp,
@@ -293,28 +450,59 @@ export function normalizeWatch(input: WatchConfigInput | null): WatchConfig {
         .filter((t): t is string => typeof t === "string" && !!t.trim())
         .map((t) => t.trim())
     : [...DEFAULT_WATCH.teams];
-  const slackPrChannels = normalizeSlackChannels(input);
-  const slackPrChannelId = slackPrChannels[0]?.id ?? DEFAULT_WATCH.slackPrChannelId;
-  const slackPrChannelName =
-    slackPrChannels[0]?.name ?? DEFAULT_WATCH.slackPrChannelName;
+  const slackWatch = normalizeSlackWatch(input);
   return {
     repo,
     pr,
     workstreamId,
     teams,
-    slackPrChannels,
-    slackPrChannelId,
-    slackPrChannelName,
+    slackWatch,
   };
 }
 
-/** Look up a watched Slack channel (id match) or null. */
-export function findSlackPrChannel(
+/** Look up a slackWatch surface by id, or null. */
+export function findSlackWatchSurface(
   watch: WatchConfig,
   channelId: string
-): SlackPrChannel | null {
+): SlackWatchSurface | null {
   const id = channelId.trim();
-  return watch.slackPrChannels.find((c) => c.id === id) ?? null;
+  return watch.slackWatch.surfaces.find((c) => c.id === id) ?? null;
+}
+
+/**
+ * Allowlist for inbox events: channel_id ∈ surfaces, or im/mpim when
+ * includeDms / includeMpims (+ myUserId for fail-closed).
+ */
+export function isSlackChannelAllowlisted(
+  watch: WatchConfig,
+  channelId: string,
+  channelKind?: SlackSurfaceKind
+): {
+  allowed: boolean;
+  surface: SlackWatchSurface | null;
+  viaInclude: boolean;
+} {
+  const surface = findSlackWatchSurface(watch, channelId);
+  if (surface) {
+    return { allowed: true, surface, viaInclude: false };
+  }
+  const sw = watch.slackWatch;
+  const kind = channelKind;
+  if (
+    kind === "im" &&
+    sw.includeDms &&
+    sw.myUserId?.trim()
+  ) {
+    return { allowed: true, surface: null, viaInclude: true };
+  }
+  if (
+    kind === "mpim" &&
+    sw.includeMpims &&
+    sw.myUserId?.trim()
+  ) {
+    return { allowed: true, surface: null, viaInclude: true };
+  }
+  return { allowed: false, surface: null, viaInclude: false };
 }
 
 /**

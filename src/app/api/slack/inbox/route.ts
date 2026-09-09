@@ -24,9 +24,7 @@ export async function GET() {
         repo: watch.repo,
         pr: watch.pr,
         workstreamId: watch.workstreamId,
-        slackPrChannels: watch.slackPrChannels,
-        slackPrChannelId: watch.slackPrChannelId,
-        slackPrChannelName: watch.slackPrChannelName,
+        slackWatch: watch.slackWatch,
         teams: watch.teams,
       },
       needsYouCap: NEEDS_YOU_EXTERNAL_CAP,
@@ -42,9 +40,10 @@ export async function GET() {
 }
 
 /**
- * POST /api/slack/inbox — accept a SlackInboxEvent (pr_link).
+ * POST /api/slack/inbox — accept SlackInboxEvent (pr_link | message).
  * Control holds NO Slack token. Idempotent on id (channel_ts).
- * Wrong channel / non-watched-repo URL → applied=false (ignored).
+ * message: durable store only — no Attention Item / Needs-you (chip 3).
+ * pr_link: only surfaces with prLinks:true; coalesce unchanged.
  */
 export async function POST(req: NextRequest) {
   let body: unknown;
@@ -62,13 +61,22 @@ export async function POST(req: NextRequest) {
   try {
     await ensureWatchConfig();
     const result = await acceptSlackInboxEvent(validated.event);
-    return NextResponse.json({
-      ok: true,
-      event: result.item.event,
-      applied: result.applied,
-      duplicate: result.duplicate,
-      item: result.item,
-    });
+    const status =
+      validated.event.type === "message" &&
+      result.applied &&
+      !result.duplicate
+        ? 201
+        : 200;
+    return NextResponse.json(
+      {
+        ok: true,
+        event: result.item.event,
+        applied: result.applied,
+        duplicate: result.duplicate,
+        item: result.item,
+      },
+      { status }
+    );
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to accept Slack inbox event";

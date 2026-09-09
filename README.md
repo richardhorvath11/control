@@ -150,7 +150,7 @@ Control holds **no GitHub token**. Live credentials stay with GitHub MCP / `gh` 
 | Template (committed) | `watch.example.json` |
 | Runtime (gitignored) | `.control/watch.json` — created from the example on first API use if missing |
 
-Default fields (multi-channel):
+Default fields (`slackWatch` — V0.8 chip 2):
 
 ```json
 {
@@ -158,18 +158,22 @@ Default fields (multi-channel):
   "pr": 32,
   "workstreamId": "ws-cred",
   "teams": [],
-  "slackPrChannels": [
-    { "id": "C0BVCSA4T2P", "name": "#control-e2e" },
-    { "id": "C0BINFRA000", "name": "#infra-prs" }
-  ]
+  "slackWatch": {
+    "surfaces": [
+      { "id": "C0BVCSA4T2P", "name": "#control-e2e", "kind": "channel", "prLinks": true },
+      { "id": "C0BINFRA000", "name": "#infra-prs", "kind": "channel", "prLinks": true }
+    ],
+    "includeDms": false,
+    "includeMpims": false
+  }
 }
 ```
 
 - `teams`: **intentional default `[]`**. Team/CODEOWNERS `review.requested` (`requested_via: "team"`) is a **no-op** until operators set **1–3** team slugs (e.g. in `.control/watch.json`). Do **not** seed `platform` (or any slug) in the default. **E2E/QA must configure `watch.teams` before B-1** (team-review scenarios); injects with unknown `team_slug` return `applied: false` and create no Needs-you.
-- `slackPrChannels`: list of Slack channels for PR-link Needs-you (poll **every** channel). Also accept `slackPrChannelIds: string[]` (names optional).
-- **Migration**: legacy scalar `slackPrChannelId` / `slackPrChannelName` still loads as a **one-element** list (`n=1`). Normalized config exposes derived `slackPrChannelId` (first channel) for back-compat.
-- **Configured** (Live default rule): non-empty `repo` **and** ≥1 Slack channel. Fixtures/seed stay for internal test only — not the dogfood path.
-- UI: **Setup** (`/settings`) or `GET`/`PUT` `/api/watch` to add/remove channels; persists `.control/watch.json`.
+- `slackWatch`: surfaces (`kind`: channel|im|mpim, `prLinks`) plus optional `includeDms` / `includeMpims` (require `myUserId`). **No** `slackPrChannels` on disk after migrate.
+- **Migration** (one-shot): `slackPrChannels` / scalars → `slackWatch.surfaces` with `prLinks: true`, **delete** old keys, persist. No legacy keep-alive.
+- **Configured** (Live default rule): non-empty `repo` **and** (`surfaces.length >= 1` **or** `includeDms` **or** `includeMpims`). Fixtures/seed stay for internal test only — not the dogfood path.
+- UI: **Setup** (`/settings`) or `GET`/`PUT` `/api/watch`; persists `.control/watch.json`.
 
 ### Events in scope
 
@@ -230,18 +234,20 @@ Malformed POST → **4xx** and does not write inbox state. Offline seed Needs-yo
 
 
 
-### Slack PR-link inbox
+### Slack inbox (pr_link + message)
 
 Durable files: `.control/slack-inbox/<id>.json`. No Slack token in Control.
 
-**SlackInboxEvent** (`type: "pr_link"`): `id` (prefer `channel_ts`), `channel_id`, `message_ts`, `permalink`, `text_excerpt`, `repo`, `pr_number`, `occurred_at`, dual `provenance` (slack + github).
+**`type: "pr_link"`**: `id` (prefer `channel_ts`), `channel_id`, `message_ts`, `permalink`, `text_excerpt`, `repo`, `pr_number`, `occurred_at`, dual `provenance` (slack + github). Only surfaces with `prLinks: true`; PR URL must be for `watch.repo`; why uses the matched surface name; watched PR attaches `workstreamId`, else ephemeral `Review · {repo}#{N}`. `prLinks: false` → ignore `pr_link` routing (document reason).
 
-Rules: channel must be in `watch.slackPrChannels` (legacy scalar → n=1); PR URL must be for `watch.repo`; why uses the matched channel name; watched PR attaches `workstreamId`, else ephemeral `Review · {repo}#{N}`. Messages without a `watch.repo` PR URL stay ignored. No org-wide Slack.
+**`type: "message"`**: `id`, `channel_id`, `channel_kind`, `message_ts`, `thread_ts?`, `permalink`, `text_excerpt` (~2k), `user_id?`, `occurred_at`, `mentions_me?`. Allowlist: `channel_id ∈ surfaces` **or** (im/mpim && include flags + `myUserId`). Durable store only — **no** Attention Item / Needs-you (chip 3). Dedupe `(channel_id, message_ts)`. Allowed → **201**. Reject unknown types / malformed → **4xx**.
+
+No org-wide Slack. No Slack token in Control.
 
 | Method | Path | Body | Response |
 |--------|------|------|----------|
 | `GET` | `/api/slack/inbox` | — | `{ ok, watch, needsYouCap, slackNeedsYou, externalNeedsYou, items }` |
-| `POST` | `/api/slack/inbox` | `SlackInboxEvent` | `{ ok, event, applied, duplicate, item }` |
+| `POST` | `/api/slack/inbox` | `SlackInboxEvent` (`pr_link` \| `message`) | `{ ok, event, applied, duplicate, item }` |
 
 ```bash
 curl -sS -X POST http://localhost:3000/api/slack/inbox \
@@ -257,7 +263,7 @@ curl -sS -X POST http://localhost:3000/api/github/inbox \
   -d "{\"id\":\"rev-req-team-platform-32\",\"type\":\"review.requested\",\"repo\":\"richardhorvath11/battle-buddy\",\"pr_number\":32,\"summary\":\"CODEOWNERS @platform requested review\",\"occurred_at\":\"2026-09-07T22:00:00.000Z\",\"provenance\":{\"url\":\"https://github.com/richardhorvath11/battle-buddy/pull/32\",\"title\":\"Review requested\",\"kind\":\"review\"},\"requested_via\":\"team\",\"team_slug\":\"platform\",\"workstream_id\":\"ws-cred\"}"
 ```
 
-See `scripts/github-watcher.md` (V0.6 standing tick) and `scripts/slack-pr-watcher.md`.
+See `scripts/github-watcher.md` (V0.6 standing tick) and `scripts/slack-watch.md`.
 
 ### Smoke `ci.failed`
 
@@ -497,7 +503,7 @@ Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slac
 | GitHub tick | `scripts/github-watcher-tick.sh` |
 | GitHub docs | `scripts/github-watcher.md` |
 | Slack helper | `scripts/slack-pr-inbox-post.sh` |
-| Slack docs | `scripts/slack-pr-watcher.md` |
+| Slack docs | `scripts/slack-watch.md` |
 | Watch template | `watch.example.json` → `.control/watch.json` |
 | GitHub state | `.control/github-watcher-state.json` (gitignored) |
 | PR follows (V0.6 chip 4) | `.control/pr-follows.json` (gitignored; Slack apply upserts) |
@@ -530,13 +536,13 @@ When Slack inbox applies a `pr_link` for `watch.repo` with `pr_number ≠ watch.
 
 ### Slack MCP → helper
 
-Agent reads **every** `watch.slackPrChannels[]` entry (cursor per `channel_id` in `.control/slack-watcher-state.json`), finds messages with PR URLs for `watch.repo`, then:
+Agent reads `watch.slackWatch` surfaces (+ optional DMs/MPIMs; cursor per surface id in `.control/slack-watcher-state.json`). PR URL + `prLinks: true` → `pr_link` helper; else POST `message`. `includeDms`/`includeMpims` without `myUserId` → fail-closed.
 
 ```bash
 ./scripts/slack-pr-inbox-post.sh <channel_id> <message_ts> <permalink> <text> <repo> <pr_number>
 ```
 
-Curls `POST /api/slack/inbox`. No Slack token in repo or Control. No org-wide Slack; messages without a `watch.repo` PR URL stay ignored.
+Curls `POST /api/slack/inbox`. No Slack token in repo or Control. No org-wide Slack. See `scripts/slack-watch.md`.
 
 Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, infinite follows, raising external Needs-you cap, full checkpoint rewrite, CI↔review coalesce, auth / multi-tenant, chips 3–5.
 

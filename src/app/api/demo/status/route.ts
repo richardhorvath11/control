@@ -41,15 +41,16 @@ export async function GET() {
         repo: watch.repo,
         pr: watch.pr,
         workstreamId: watch.workstreamId,
-        slackPrChannels: watch.slackPrChannels,
-        slackChannelCount: watch.slackPrChannels.length,
+        slackWatch: watch.slackWatch,
+        slackChannelCount: watch.slackWatch.surfaces.length,
+        surfaceCount: watch.slackWatch.surfaces.length,
         configured: isWatchConfigured(watch),
       },
       activeFollowCount: follows.length,
       needsYouCap: NEEDS_YOU_EXTERNAL_CAP,
       label:
         serverMode === "live"
-          ? `Live · ${watch.repo} · ${watch.slackPrChannels.length} Slack channels`
+          ? `Live · ${watch.repo} · ${watch.slackWatch.surfaces.length} Slack surfaces`
           : "Demo · seeded Monday",
     });
   } catch (err) {

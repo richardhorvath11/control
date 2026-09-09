@@ -4,7 +4,10 @@ import {
   CONTROL_DIR,
   ensureControlDir,
   ensureWatchConfig,
-  findSlackPrChannel,
+  findSlackWatchSurface,
+  isSlackChannelAllowlisted,
+  type SlackSurfaceKind,
+  type SlackWatchSurface,
   type WatchConfig,
 } from "./github-inbox";
 import { NEEDS_YOU_EXTERNAL_CAP } from "./github-constants";
@@ -27,7 +30,7 @@ export interface SlackProvenanceEntry {
   timestamp?: string;
 }
 
-export interface SlackInboxEvent {
+export interface SlackPrLinkInboxEvent {
   /** Prefer `${channel_id}_${message_ts}` for idempotent id */
   id: string;
   type: "pr_link";
@@ -40,6 +43,24 @@ export interface SlackInboxEvent {
   occurred_at: string;
   provenance: SlackProvenanceEntry[];
 }
+
+/** Durable plain message (V0.8 chip 2). Store only — no Attention Item / Needs-you. */
+export interface SlackMessageInboxEvent {
+  id: string;
+  type: "message";
+  channel_id: string;
+  channel_kind: SlackSurfaceKind;
+  message_ts: string;
+  thread_ts?: string;
+  permalink: string;
+  /** Truncated ~2k */
+  text_excerpt: string;
+  user_id?: string;
+  occurred_at: string;
+  mentions_me?: boolean;
+}
+
+export type SlackInboxEvent = SlackPrLinkInboxEvent | SlackMessageInboxEvent;
 
 export interface SlackAttentionEffect {
   id: string;
@@ -213,8 +234,14 @@ export function validateSlackInboxEvent(
   }
   const b = body as Record<string, unknown>;
 
-  if (typeof b.type !== "string" || b.type !== "pr_link") {
-    return { ok: false, error: 'type must be "pr_link"' };
+  if (typeof b.type !== "string") {
+    return { ok: false, error: "Missing or invalid type" };
+  }
+  if (b.type !== "pr_link" && b.type !== "message") {
+    return {
+      ok: false,
+      error: 'type must be "pr_link" or "message"',
+    };
   }
 
   if (typeof b.channel_id !== "string" || !b.channel_id.trim()) {
@@ -226,12 +253,10 @@ export function validateSlackInboxEvent(
 
   const channel_id = b.channel_id.trim();
   const message_ts = b.message_ts.trim();
-  // Idempotent id: channel_ts
   const idRaw =
     typeof b.id === "string" && b.id.trim()
       ? b.id.trim()
       : `${channel_id}_${message_ts}`;
-  // Sanitize dots in ts for filesystem-safe id (keep original message_ts on event)
   const id = idRaw.replace(/[^a-zA-Z0-9._-]/g, "_");
   if (!safeId(id)) {
     return { ok: false, error: "Invalid id format" };
@@ -247,6 +272,43 @@ export function validateSlackInboxEvent(
     return { ok: false, error: "Missing or invalid occurred_at" };
   }
 
+  if (b.type === "message") {
+    const kindRaw = b.channel_kind;
+    if (kindRaw !== "channel" && kindRaw !== "im" && kindRaw !== "mpim") {
+      return {
+        ok: false,
+        error: 'channel_kind must be "channel" | "im" | "mpim"',
+      };
+    }
+    const channel_kind = kindRaw as SlackSurfaceKind;
+    const thread_ts =
+      typeof b.thread_ts === "string" && b.thread_ts.trim()
+        ? b.thread_ts.trim()
+        : undefined;
+    const user_id =
+      typeof b.user_id === "string" && b.user_id.trim()
+        ? b.user_id.trim()
+        : undefined;
+    const mentions_me =
+      typeof b.mentions_me === "boolean" ? b.mentions_me : undefined;
+
+    const event: SlackMessageInboxEvent = {
+      id,
+      type: "message",
+      channel_id,
+      channel_kind,
+      message_ts,
+      ...(thread_ts ? { thread_ts } : {}),
+      permalink: b.permalink.trim(),
+      text_excerpt: String(b.text_excerpt).slice(0, 2000),
+      ...(user_id ? { user_id } : {}),
+      occurred_at: b.occurred_at.trim(),
+      ...(mentions_me !== undefined ? { mentions_me } : {}),
+    };
+    return { ok: true, event };
+  }
+
+  // pr_link
   let repo =
     typeof b.repo === "string" && b.repo.trim() ? b.repo.trim() : "";
   let pr_number =
@@ -254,7 +316,6 @@ export function validateSlackInboxEvent(
       ? Math.trunc(b.pr_number)
       : NaN;
 
-  // Allow deriving repo/pr from text_excerpt or permalink if omitted
   if (!repo || !Number.isFinite(pr_number)) {
     const parsed =
       parseGithubPrUrl(b.text_excerpt) ||
@@ -295,7 +356,6 @@ export function validateSlackInboxEvent(
     }
   }
 
-  // Ensure dual provenance defaults when not provided
   if (provenance.length === 0) {
     const ghUrl = `https://github.com/${repo}/pull/${pr_number}`;
     provenance = [
@@ -320,7 +380,7 @@ export function validateSlackInboxEvent(
     ];
   }
 
-  const event: SlackInboxEvent = {
+  const event: SlackPrLinkInboxEvent = {
     id,
     type: "pr_link",
     channel_id,
@@ -336,21 +396,71 @@ export function validateSlackInboxEvent(
   return { ok: true, event };
 }
 
-export function routeSlackEvent(
-  event: SlackInboxEvent,
+export function routeSlackMessageEvent(
+  event: SlackMessageInboxEvent,
   watch: WatchConfig
 ): SlackRoutingEffects {
-  // Channel must be in watch.slackPrChannels (multi-channel; legacy scalar → n=1)
-  const matchedChannel = findSlackPrChannel(watch, event.channel_id);
-  if (!matchedChannel) {
-    const allowed = watch.slackPrChannels.map((c) => c.id).join(",") || "(none)";
+  const gate = isSlackChannelAllowlisted(
+    watch,
+    event.channel_id,
+    event.channel_kind
+  );
+  if (!gate.allowed) {
+    const surfaceIds =
+      watch.slackWatch.surfaces.map((c) => c.id).join(",") || "(none)";
     return {
       attention: null,
       fyiLine: null,
       workstreamPatch: null,
       newWorkstream: null,
       ignored: true,
-      ignoreReason: `channel_id ${event.channel_id} not in watch.slackPrChannels [${allowed}]`,
+      ignoreReason: `channel_id ${event.channel_id} (${event.channel_kind}) not allowlisted [surfaces=${surfaceIds}; includeDms=${watch.slackWatch.includeDms}; includeMpims=${watch.slackWatch.includeMpims}]`,
+    };
+  }
+
+  // Store only — chip 3 adds Needs-you rules later. No Attention Item.
+  return {
+    attention: null,
+    fyiLine: null,
+    workstreamPatch: null,
+    newWorkstream: null,
+    capped: false,
+  };
+}
+
+export function routeSlackEvent(
+  event: SlackInboxEvent,
+  watch: WatchConfig
+): SlackRoutingEffects {
+  if (event.type === "message") {
+    return routeSlackMessageEvent(event, watch);
+  }
+
+  // pr_link: only surfaces with prLinks:true (not bare includeDms/Mpims).
+  const matched: SlackWatchSurface | null = findSlackWatchSurface(
+    watch,
+    event.channel_id
+  );
+  if (!matched) {
+    const allowed =
+      watch.slackWatch.surfaces.map((c) => c.id).join(",") || "(none)";
+    return {
+      attention: null,
+      fyiLine: null,
+      workstreamPatch: null,
+      newWorkstream: null,
+      ignored: true,
+      ignoreReason: `channel_id ${event.channel_id} not in watch.slackWatch.surfaces [${allowed}]`,
+    };
+  }
+  if (!matched.prLinks) {
+    return {
+      attention: null,
+      fyiLine: null,
+      workstreamPatch: null,
+      newWorkstream: null,
+      ignored: true,
+      ignoreReason: `pr_link ignored: surface ${matched.id} has prLinks:false (message events still allowed)`,
     };
   }
 
@@ -367,15 +477,14 @@ export function routeSlackEvent(
   }
 
   const channelLabel =
-    matchedChannel.name?.trim() ||
-    watch.slackPrChannelName?.trim() ||
+    matched.name?.trim() ||
+    watch.slackWatch.surfaces[0]?.name?.trim() ||
     "#control-e2e";
   const why = `Review ask in ${channelLabel}`;
   const key = slackDedupeKey(event);
   const coalesceKey = reviewAskCoalesceKey(event.repo, event.pr_number);
   const attentionId = reviewAskAttentionId(event.repo, event.pr_number);
 
-  // Ensure dual provenance
   const ghUrl = `https://github.com/${event.repo}/pull/${event.pr_number}`;
   let provenance = [...event.provenance];
   const hasSlack = provenance.some((p) => p.kind === "slack");
@@ -478,9 +587,12 @@ export async function demoteSlackNeedsYouItem(
 ): Promise<void> {
   if (!item.effects?.attention) return;
   const att = item.effects.attention;
+  const evt = item.event;
   const fyiLine =
     item.effects.fyiLine ??
-    `Slack (capped) · ${item.event.repo}#${item.event.pr_number}: ${item.event.text_excerpt}`;
+    (evt.type === "pr_link"
+      ? `Slack (capped) · ${evt.repo}#${evt.pr_number}: ${evt.text_excerpt}`
+      : `Slack (capped) · ${evt.channel_id}: ${evt.text_excerpt}`);
   const next: StoredSlackInboxItem = {
     ...item,
     effects: {
@@ -497,23 +609,35 @@ export async function demoteSlackNeedsYouItem(
   await writeSlackInboxItem(next);
 }
 
+export function messageDedupeKey(event: {
+  channel_id: string;
+  message_ts: string;
+}): string {
+  return `message|${event.channel_id}|${event.message_ts}`;
+}
+
 export function findSlackDedupeMatch(
   items: StoredSlackInboxItem[],
   event: SlackInboxEvent
 ): StoredSlackInboxItem | null {
-  const key = slackDedupeKey(event);
   for (const item of items) {
     if (item.duplicate) continue;
     if (!item.applied) continue;
     if (item.id === event.id) return item;
-    if (slackDedupeKey(item.event) === key) return item;
+    if (event.type === "pr_link" && item.event.type === "pr_link") {
+      if (slackDedupeKey(item.event) === slackDedupeKey(event)) return item;
+    }
+    if (event.type === "message" && item.event.type === "message") {
+      if (messageDedupeKey(item.event) === messageDedupeKey(event)) return item;
+    }
   }
   return null;
 }
 
 /**
- * Accept a Slack PR-link event. No Slack token in Control.
- * Wrong channel / wrong repo → stored applied=false (ignored).
+ * Accept a Slack inbox event (pr_link | message). No Slack token in Control.
+ * Wrong channel / wrong repo / prLinks:false → stored applied=false (ignored).
+ * message: durable store only — no Attention Item.
  */
 export async function acceptSlackInboxEvent(
   event: SlackInboxEvent
@@ -577,26 +701,29 @@ export async function acceptSlackInboxEvent(
 
   // Chip 4: upsert PR follow for non-primary Slack-discovered PRs (server-side).
   // Primary watch.pr is never stored as a follow; wrong repo already ignored above.
-  const followWsId =
-    effects.newWorkstream?.id ??
-    effects.attention?.workstreamId ??
-    effects.workstreamPatch?.id;
-  if (
-    followWsId &&
-    event.pr_number !== watch.pr &&
-    event.repo.toLowerCase() === watch.repo.toLowerCase()
-  ) {
-    await upsertFollowFromSlackApply({
-      repo: event.repo,
-      pr: event.pr_number,
-      slack_event_id: event.id,
-      workstreamId: followWsId,
-      watch,
-    });
-  }
+  // Plain message events never create follows or Needs-you (chip 3).
+  if (event.type === "pr_link") {
+    const followWsId =
+      effects.newWorkstream?.id ??
+      effects.attention?.workstreamId ??
+      effects.workstreamPatch?.id;
+    if (
+      followWsId &&
+      event.pr_number !== watch.pr &&
+      event.repo.toLowerCase() === watch.repo.toLowerCase()
+    ) {
+      await upsertFollowFromSlackApply({
+        repo: event.repo,
+        pr: event.pr_number,
+        slack_event_id: event.id,
+        workstreamId: followWsId,
+        watch,
+      });
+    }
 
-  const { enforceExternalNeedsYouCap } = await import("./needs-you-cap");
-  await enforceExternalNeedsYouCap(NEEDS_YOU_EXTERNAL_CAP);
+    const { enforceExternalNeedsYouCap } = await import("./needs-you-cap");
+    await enforceExternalNeedsYouCap(NEEDS_YOU_EXTERNAL_CAP);
+  }
 
   const refreshed = (await readSlackInboxItem(event.id)) ?? item;
   return { item: refreshed, duplicate: false, applied: true };

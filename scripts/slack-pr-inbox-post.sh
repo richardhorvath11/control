@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # slack-pr-inbox-post.sh — POST a Slack PR-link event into Control inbox.
 #
-# Control holds NO Slack token. An agent with Slack MCP polls EVERY channel in
-# watch.slackPrChannels (cursor per channel_id in .control/slack-watcher-state.json),
-# extracts PR URLs for watch.repo, then calls this helper for each new message_ts.
+# Control holds NO Slack token. An agent with Slack MCP polls slackWatch.surfaces
+# (+ optional DMs/MPIMs; see scripts/slack-watch.md). Cursor per surface id in
+# .control/slack-watcher-state.json. For PR URLs on prLinks:true surfaces, call
+# this helper (type pr_link). Plain messages POST type "message" instead.
 #
 # Usage:
 #   ./scripts/slack-pr-inbox-post.sh \

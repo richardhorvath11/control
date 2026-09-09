@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { useControlStore } from "@/lib/store";
 
-type ChannelRow = { id: string; name: string };
+type SurfaceKind = "channel" | "im" | "mpim";
+type SurfaceRow = {
+  id: string;
+  name: string;
+  kind: SurfaceKind;
+  prLinks: boolean;
+};
 
 type WatchResponse = {
   ok?: boolean;
@@ -12,14 +18,24 @@ type WatchResponse = {
     pr: number;
     workstreamId: string;
     teams: string[];
-    slackPrChannels: { id: string; name?: string }[];
+    slackWatch: {
+      surfaces: {
+        id: string;
+        name?: string;
+        kind: SurfaceKind;
+        prLinks: boolean;
+      }[];
+      includeDms: boolean;
+      includeMpims: boolean;
+      myUserId?: string;
+    };
     configured?: boolean;
   };
   error?: string;
 };
 
 /**
- * BYO Live setup — point Control at your repo/teams and ≥2 Slack PR channels.
+ * BYO Live setup — point Control at your repo/teams and slackWatch surfaces.
  * Persists via PUT /api/watch → `.control/watch.json`. Load demo never wipes this.
  */
 export default function SettingsPage() {
@@ -29,10 +45,13 @@ export default function SettingsPage() {
   const [pr, setPr] = useState("32");
   const [workstreamId, setWorkstreamId] = useState("ws-cred");
   const [teamsText, setTeamsText] = useState("");
-  const [channels, setChannels] = useState<ChannelRow[]>([
-    { id: "", name: "" },
-    { id: "", name: "" },
+  const [surfaces, setSurfaces] = useState<SurfaceRow[]>([
+    { id: "", name: "", kind: "channel", prLinks: true },
+    { id: "", name: "", kind: "channel", prLinks: true },
   ]);
+  const [includeDms, setIncludeDms] = useState(false);
+  const [includeMpims, setIncludeMpims] = useState(false);
+  const [myUserId, setMyUserId] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -53,16 +72,25 @@ export default function SettingsPage() {
       setPr(String(w.pr));
       setWorkstreamId(w.workstreamId);
       setTeamsText((w.teams ?? []).join(", "));
-      const ch = (w.slackPrChannels ?? []).map((c) => ({
+      const sw = w.slackWatch;
+      const rows = (sw?.surfaces ?? []).map((c) => ({
         id: c.id,
         name: c.name ?? "",
+        kind: c.kind ?? "channel",
+        prLinks: c.prLinks !== false,
       }));
-      while (ch.length < 2) ch.push({ id: "", name: "" });
-      setChannels(ch);
+      while (rows.length < 2) {
+        rows.push({ id: "", name: "", kind: "channel", prLinks: true });
+      }
+      setSurfaces(rows);
+      setIncludeDms(sw?.includeDms === true);
+      setIncludeMpims(sw?.includeMpims === true);
+      setMyUserId(sw?.myUserId ?? "");
+      const n = sw?.surfaces?.length ?? 0;
       setStatus(
         w.configured
-          ? `Configured · ${w.slackPrChannels.length} Slack channel(s)`
-          : "Not configured (need repo + ≥1 Slack channel)"
+          ? `Configured · ${n} surface(s)${sw?.includeDms ? " · DMs" : ""}${sw?.includeMpims ? " · MPIMs" : ""}`
+          : "Not configured (need repo + ≥1 surface or include DMs/MPIMs)"
       );
     } catch {
       setError("Failed to load watch (is Control running?)");
@@ -75,18 +103,21 @@ export default function SettingsPage() {
     void load();
   }, [load]);
 
-  const updateChannel = (index: number, patch: Partial<ChannelRow>) => {
-    setChannels((prev) =>
+  const updateSurface = (index: number, patch: Partial<SurfaceRow>) => {
+    setSurfaces((prev) =>
       prev.map((c, i) => (i === index ? { ...c, ...patch } : c))
     );
   };
 
-  const addChannel = () => {
-    setChannels((prev) => [...prev, { id: "", name: "" }]);
+  const addSurface = () => {
+    setSurfaces((prev) => [
+      ...prev,
+      { id: "", name: "", kind: "channel", prLinks: true },
+    ]);
   };
 
-  const removeChannel = (index: number) => {
-    setChannels((prev) => {
+  const removeSurface = (index: number) => {
+    setSurfaces((prev) => {
       if (prev.length <= 1) return prev;
       return prev.filter((_, i) => i !== index);
     });
@@ -96,14 +127,21 @@ export default function SettingsPage() {
     setSaving(true);
     setError(null);
     setStatus(null);
-    const slackPrChannels = channels
+    const surfaceList = surfaces
       .map((c) => ({
         id: c.id.trim(),
         name: c.name.trim() || undefined,
+        kind: c.kind,
+        prLinks: c.prLinks,
       }))
       .filter((c) => c.id);
-    if (slackPrChannels.length < 1) {
-      setError("Add at least one Slack channel id");
+    if (surfaceList.length < 1 && !includeDms && !includeMpims) {
+      setError("Add at least one Slack surface, or enable include DMs/MPIMs");
+      setSaving(false);
+      return;
+    }
+    if ((includeDms || includeMpims) && !myUserId.trim()) {
+      setError("myUserId is required when include DMs or MPIMs is enabled");
       setSaving(false);
       return;
     }
@@ -121,7 +159,12 @@ export default function SettingsPage() {
           pr: Number.isFinite(prNum) ? prNum : undefined,
           workstreamId: workstreamId.trim() || undefined,
           teams,
-          slackPrChannels,
+          slackWatch: {
+            surfaces: surfaceList,
+            includeDms,
+            includeMpims,
+            ...(myUserId.trim() ? { myUserId: myUserId.trim() } : {}),
+          },
         }),
       });
       const data = (await res.json()) as WatchResponse;
@@ -129,10 +172,10 @@ export default function SettingsPage() {
         setError(data.error ?? "Save failed");
         return;
       }
+      const n = data.watch.slackWatch?.surfaces?.length ?? 0;
       setStatus(
-        `Saved · ${data.watch.slackPrChannels.length} Slack channels · Live default when configured`
+        `Saved · ${n} surface(s) · Live default when configured`
       );
-      // Dogfood path: after saving a configured watch, switch to Live (not seed).
       if (data.watch.configured && seedLiveMode !== "live") {
         setSeedLiveMode("live");
       }
@@ -151,8 +194,9 @@ export default function SettingsPage() {
           Live setup
         </h1>
         <p className="text-[13px] text-muted mt-1">
-          Point Control at your repo/teams and multiple Slack PR channels.
-          Persists to{" "}
+          Point Control at your repo/teams and{" "}
+          <code className="text-text">slackWatch</code> surfaces (channels /
+          DMs / MPIMs). Persists to{" "}
           <code className="text-text">.control/watch.json</code>. Monday seed
           is only via <strong>Load demo</strong> — not this path.
         </p>
@@ -210,42 +254,95 @@ export default function SettingsPage() {
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-[11px] uppercase tracking-wide text-muted">
-                Slack PR channels (≥2 recommended)
+                slackWatch surfaces
               </span>
               <button
                 type="button"
                 className="btn-ghost text-[12px]"
-                onClick={addChannel}
+                onClick={addSurface}
               >
-                Add channel
+                Add surface
               </button>
             </div>
-            {channels.map((ch, i) => (
-              <div key={i} className="flex gap-2 items-center">
+            {surfaces.map((ch, i) => (
+              <div key={i} className="flex flex-wrap gap-2 items-center">
                 <input
-                  className="flex-1 rounded-lg border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-running/50 font-mono"
+                  className="flex-1 min-w-[7rem] rounded-lg border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-running/50 font-mono"
                   value={ch.id}
-                  onChange={(e) => updateChannel(i, { id: e.target.value })}
-                  placeholder="C…"
+                  onChange={(e) => updateSurface(i, { id: e.target.value })}
+                  placeholder="C… / D…"
                 />
                 <input
-                  className="flex-1 rounded-lg border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-running/50"
+                  className="flex-1 min-w-[7rem] rounded-lg border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-running/50"
                   value={ch.name}
-                  onChange={(e) => updateChannel(i, { name: e.target.value })}
-                  placeholder="#pr-reviews"
+                  onChange={(e) => updateSurface(i, { name: e.target.value })}
+                  placeholder="#eng"
                 />
+                <select
+                  className="rounded-lg border border-border bg-bg px-2 py-2 text-[12px]"
+                  value={ch.kind}
+                  onChange={(e) =>
+                    updateSurface(i, {
+                      kind: e.target.value as SurfaceKind,
+                    })
+                  }
+                >
+                  <option value="channel">channel</option>
+                  <option value="im">im</option>
+                  <option value="mpim">mpim</option>
+                </select>
+                <label className="flex items-center gap-1 text-[12px] text-muted whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={ch.prLinks}
+                    onChange={(e) =>
+                      updateSurface(i, { prLinks: e.target.checked })
+                    }
+                  />
+                  prLinks
+                </label>
                 <button
                   type="button"
                   className="btn-ghost text-[12px] text-blocked"
-                  onClick={() => removeChannel(i)}
-                  disabled={channels.length <= 1}
-                  title="Remove channel"
+                  onClick={() => removeSurface(i)}
+                  disabled={surfaces.length <= 1}
+                  title="Remove surface"
                 >
                   Remove
                 </button>
               </div>
             ))}
           </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex items-center gap-2 text-[13px]">
+              <input
+                type="checkbox"
+                checked={includeDms}
+                onChange={(e) => setIncludeDms(e.target.checked)}
+              />
+              includeDms
+            </label>
+            <label className="flex items-center gap-2 text-[13px]">
+              <input
+                type="checkbox"
+                checked={includeMpims}
+                onChange={(e) => setIncludeMpims(e.target.checked)}
+              />
+              includeMpims
+            </label>
+          </div>
+          <label className="block space-y-1">
+            <span className="text-[11px] uppercase tracking-wide text-muted">
+              myUserId (required when include DMs/MPIMs)
+            </span>
+            <input
+              className="w-full rounded-lg border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-running/50 font-mono"
+              value={myUserId}
+              onChange={(e) => setMyUserId(e.target.value)}
+              placeholder="U…"
+            />
+          </label>
 
           <div className="flex items-center gap-3 pt-2">
             <button
@@ -280,15 +377,18 @@ export default function SettingsPage() {
 
       <div className="text-[12px] text-muted space-y-1">
         <p>
-          Legacy <code className="text-text">slackPrChannelId</code> /{" "}
-          <code className="text-text">slackPrChannelName</code> still load as a
-          one-element list. Prefer{" "}
-          <code className="text-text">slackPrChannels</code>.
+          Config shape is <code className="text-text">slackWatch</code> only.
+          Legacy <code className="text-text">slackPrChannels</code> / scalars
+          one-shot migrate on load (old keys deleted).{" "}
+          <code className="text-text">prLinks:false</code> surfaces accept{" "}
+          <code className="text-text">message</code> events but ignore{" "}
+          <code className="text-text">pr_link</code> routing.
         </p>
         <p>
           Or edit{" "}
           <code className="text-text">.control/watch.json</code> / copy from{" "}
-          <code className="text-text">watch.example.json</code>.
+          <code className="text-text">watch.example.json</code>. No Slack token
+          in Control.
         </p>
       </div>
     </div>

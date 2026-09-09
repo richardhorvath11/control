@@ -16,9 +16,13 @@ const watch: WatchConfig = {
   pr: 32,
   workstreamId: "ws-cred",
   teams: ["platform"],
-  slackPrChannels: [{ id: "C0BVCSA4T2P", name: "#control-e2e" }],
-  slackPrChannelId: "C0BVCSA4T2P",
-  slackPrChannelName: "#control-e2e",
+  slackWatch: {
+    surfaces: [
+      { id: "C0BVCSA4T2P", name: "#control-e2e", kind: "channel", prLinks: true },
+    ],
+    includeDms: false,
+    includeMpims: false,
+  },
 };
 
 let failed = 0;
