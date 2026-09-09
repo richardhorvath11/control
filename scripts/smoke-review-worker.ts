@@ -51,6 +51,36 @@ assert(
   "waiting detail copy"
 );
 assert(WORKER_TIMEOUT_DETAIL.includes("control-review-worker"), "timeout copy");
+assert(/timed out|Waiting/i.test(WORKER_TIMEOUT_DETAIL), "timeout copy mentions waiting/timed out");
+assert(
+  !/Review runner failed/i.test(WORKER_TIMEOUT_DETAIL),
+  "timeout copy is not Review runner failed"
+);
+
+// BUG-W4a/b: Live timeout path must not invent Demo/fake Surface checks.
+{
+  const storeSrc = fs.readFileSync(path.join(ROOT, "src/lib/store.ts"), "utf8");
+  const liveIdx = storeSrc.indexOf("Never invent findings");
+  const demoIdx = storeSrc.indexOf("// Demo: keep local sim");
+  assert(liveIdx > 0 && demoIdx > liveIdx, "Live block before Demo sim");
+  const liveBlock = storeSrc.slice(liveIdx, demoIdx);
+  assert(
+    !liveBlock.includes("buildPrReviewItem"),
+    "Live path must not call buildPrReviewItem (no templated Surface checks)"
+  );
+  assert(
+    !liveBlock.includes("buildFakeReviewResult"),
+    "Live path must not call buildFakeReviewResult"
+  );
+  assert(
+    liveBlock.includes("WORKER_TIMEOUT_DETAIL"),
+    "Live poll timeout uses WORKER_TIMEOUT_DETAIL"
+  );
+  assert(
+    liveBlock.includes("landFailed(WORKER_TIMEOUT_DETAIL"),
+    "timeout lands Failed via WORKER_TIMEOUT_DETAIL"
+  );
+}
 
 {
   const prev = process.env.CONTROL_REVIEW_BACKEND;

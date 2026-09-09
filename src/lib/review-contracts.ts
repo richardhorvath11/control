@@ -356,9 +356,9 @@ export const NO_REVIEW_BACKEND_DETAIL =
 export const WAITING_FOR_LOCAL_WORKER_DETAIL =
   "Waiting for local worker (claude Pro).";
 
-/** Failed detail when no worker claims the job in time. */
+/** Failed/Blocked detail when no worker claims the job in time (no result file). */
 export const WORKER_TIMEOUT_DETAIL =
-  "start control-review-worker";
+  "Waiting timed out — run ./scripts/control-review-worker";
 
 /** Default client poll wait for local worker result (ms). */
 export const DEFAULT_WORKER_WAIT_MS = 180_000;

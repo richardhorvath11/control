@@ -33,6 +33,7 @@ import {
   buildPrReviewAgent,
   buildPrReviewItem,
   parseRepoPrFromCoalesceKey,
+  prReviewAgentName,
   prReviewSimDelayMs,
   repoPrFromAttention,
   type StartPrReviewWorkerArgs,
@@ -51,6 +52,12 @@ const initial = seed as SeedData;
 function uid(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
 }
+
+/** Bumped on Demo reset so in-flight Live polls / Demo timers cannot land. */
+let reviewWorkerEpoch = 0;
+
+/** Sync guard: auto-kick idempotency that cannot race Zustand persist. */
+const autoKickInFlight = new Set<string>();
 
 interface ControlState {
   clockLabel: string;
@@ -667,6 +674,8 @@ export const useControlStore = create<ControlState>()(
       resetDemoState: () => {
         // Clear persisted Zustand key control-v0, then rehydrate in-memory from seed.
         // Does NOT delete durable inbox files or watch/follows — soft-ignore via cleared applied ids.
+        reviewWorkerEpoch += 1;
+        autoKickInFlight.clear();
         try {
           useControlStore.persist.clearStorage();
         } catch {
@@ -716,16 +725,32 @@ export const useControlStore = create<ControlState>()(
 
         const coalesceKey = reviewAskCoalesceKey(repo, pr);
         const idemKey = autoReviewKeyFromRepoPr(repo, pr);
+        const agentName = prReviewAgentName(repo, pr);
 
         if (args.source === "auto") {
           if (get().seedLiveMode !== "live") return;
-          if (get().autoKickedReviewKeys.includes(idemKey)) return;
+          if (
+            get().autoKickedReviewKeys.includes(idemKey) ||
+            autoKickInFlight.has(idemKey)
+          ) {
+            return;
+          }
+          // Do not stack another Running agent for the same repo#PR.
+          if (
+            get().agents.some(
+              (a) => a.name === agentName && a.status === "Running"
+            )
+          ) {
+            return;
+          }
+          autoKickInFlight.add(idemKey);
           set({
             autoKickedReviewKeys: [...get().autoKickedReviewKeys, idemKey],
           });
         }
 
         const agentId = uid("agent");
+        const epoch = reviewWorkerEpoch;
         const newAgent = buildPrReviewAgent({
           id: agentId,
           repo,
@@ -748,7 +773,16 @@ export const useControlStore = create<ControlState>()(
         const source = args.source;
         const live = get().seedLiveMode === "live";
 
+        const stillCurrent = () => {
+          if (epoch !== reviewWorkerEpoch) return false;
+          const a = get().agents.find((x) => x.id === agentId);
+          return !!a && a.status === "Running";
+        };
+
         const landOk = (reviewItem: ReviewItem, summaryDetail?: string) => {
+          // BUG-W4b: never land invented/stale findings onto a non-running agent
+          // (e.g. after Failed, Demo reset, or mode switch).
+          if (!stillCurrent()) return;
           set({
             agents: get().agents.map((a) =>
               a.id === agentId
@@ -793,6 +827,7 @@ export const useControlStore = create<ControlState>()(
         };
 
         const landFailed = (detail: string, blocked = false) => {
+          if (!stillCurrent()) return;
           set({
             agents: get().agents.map((a) =>
               a.id === agentId
@@ -816,13 +851,14 @@ export const useControlStore = create<ControlState>()(
         };
 
         // Live: default worker enqueue → poll results; or sync control-review-run.
-        // Never invent findings.
+        // Never invent findings (no Demo templated "Surface checks").
         if (live) {
           const applyResult = (result: ControlReviewResultV1) => {
+            // Only real control.review_result.v1 from disk/API — never fabricate.
             if (result.status === "error") {
               landFailed(
                 result.summary?.trim() || "Agent Failed",
-                /not configured|No review backend|start control-review-worker/i.test(
+                /not configured|No review backend|control-review-worker/i.test(
                   result.summary ?? ""
                 )
               );
@@ -842,6 +878,7 @@ export const useControlStore = create<ControlState>()(
           };
 
           const setWaitingDetail = () => {
+            if (!stillCurrent()) return;
             set({
               agents: get().agents.map((a) =>
                 a.id === agentId
@@ -860,7 +897,9 @@ export const useControlStore = create<ControlState>()(
             const intervalMs = 2000;
             const started = Date.now();
             while (Date.now() - started < waitMs) {
+              if (!stillCurrent()) return;
               await new Promise((r) => window.setTimeout(r, intervalMs));
+              if (!stillCurrent()) return;
               try {
                 const poll = await fetch(
                   `/api/review/result?job_id=${encodeURIComponent(jobId)}`
@@ -876,6 +915,7 @@ export const useControlStore = create<ControlState>()(
                   return;
                 }
                 if (pdata.ok === false && pdata.error && !pdata.pending) {
+                  // Corrupt/invalid result file — Failed only, no invented findings.
                   landFailed(pdata.error);
                   return;
                 }
@@ -883,7 +923,9 @@ export const useControlStore = create<ControlState>()(
                 // keep waiting — transient poll errors
               }
             }
-            landFailed(WORKER_TIMEOUT_DETAIL);
+            // BUG-W4a: timeout with no result → Failed/Blocked + worker copy (never
+            // "Review runner failed"; never map templated Surface checks).
+            landFailed(WORKER_TIMEOUT_DETAIL, true);
           };
 
           void (async () => {
@@ -905,6 +947,7 @@ export const useControlStore = create<ControlState>()(
                 code?: string;
                 error?: string;
                 detail?: string;
+                backend?: string;
                 job?: { job_id?: string };
                 result?: ControlReviewResultV1;
               };
@@ -917,18 +960,39 @@ export const useControlStore = create<ControlState>()(
                 return;
               }
 
+              const workerPending =
+                data.pending === true ||
+                data.backend === "worker" ||
+                (typeof data.detail === "string" &&
+                  /local worker|control-review-worker/i.test(data.detail));
+
               // Worker backend: job on disk, wait for local Pro Claude worker.
-              if (res.ok && data.ok && data.pending && data.job?.job_id) {
+              if (res.ok && data.ok && workerPending) {
+                const jobId = data.job?.job_id;
+                if (!jobId) {
+                  landFailed(WORKER_TIMEOUT_DETAIL, true);
+                  return;
+                }
                 setWaitingDetail();
-                await pollResult(data.job.job_id);
+                await pollResult(jobId);
                 return;
               }
 
               if (!res.ok || !data.ok || !data.result) {
+                // BUG-W4a: never surface "Review runner failed" for the worker path.
+                const workerHint =
+                  data.backend === "worker" ||
+                  data.pending === true ||
+                  /control-review-worker|local worker/i.test(
+                    `${data.error ?? ""} ${data.detail ?? ""}`
+                  );
                 landFailed(
                   data.error?.trim() ||
                     data.result?.summary?.trim() ||
-                    "Review runner failed"
+                    (workerHint
+                      ? WORKER_TIMEOUT_DETAIL
+                      : "Review runner failed"),
+                  workerHint
                 );
                 return;
               }
@@ -943,9 +1007,13 @@ export const useControlStore = create<ControlState>()(
           return;
         }
 
-        // Demo: keep local sim (or operators may point Live smoke at fake separately).
+        // Demo: keep local sim (fake backend is test-only; Live default is NOT fake).
         const delay = prReviewSimDelayMs();
         window.setTimeout(() => {
+          // BUG-W4b: if mode flipped to Live (or reset), do not invent Surface checks.
+          if (epoch !== reviewWorkerEpoch) return;
+          if (get().seedLiveMode === "live") return;
+          if (!stillCurrent()) return;
           const reviewId = uid("rev");
           const findingId = uid("f");
           const reviewItem = buildPrReviewItem({

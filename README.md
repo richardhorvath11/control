@@ -281,7 +281,7 @@ npx tsx scripts/smoke-auto-kick-review.ts
 3. Worker claims oldest pending job (sidecar `.claimed` + `in-progress/`), runs `env -u ANTHROPIC_API_KEY claude -p "…"`, writes `.control/review-results/{job_id}.json`.
 4. Control polls `GET /api/review/result?job_id=…` (≈2s; server reads the results dir — client never imports `fs`) → same import path → Review + Agent Complete. No toast. No invented findings.
 
-**Auth (dogfood):** same-user `claude` login **or** `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`. **Never** require a Console `ANTHROPIC_API_KEY` for dogfood. If no worker claims the job within the wait window, Agent **Failed** with `start control-review-worker`.
+**Auth (dogfood):** same-user `claude` login **or** `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`. **Never** require a Console `ANTHROPIC_API_KEY` for dogfood. If no worker claims the job within the wait window, Agent **Failed/Blocked** with `Waiting timed out — run ./scripts/control-review-worker` (no invented Review findings).
 
 Worker exit codes: `0` ok · `1` no pending (`--once`) · `2` retryable · `3` parse · `4` claude missing. Failures still write `status: error` results so Control can land Agent Failed.
 
