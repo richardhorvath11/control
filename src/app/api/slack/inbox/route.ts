@@ -24,6 +24,7 @@ export async function GET() {
         repo: watch.repo,
         pr: watch.pr,
         workstreamId: watch.workstreamId,
+        slackPrChannels: watch.slackPrChannels,
         slackPrChannelId: watch.slackPrChannelId,
         slackPrChannelName: watch.slackPrChannelName,
         teams: watch.teams,

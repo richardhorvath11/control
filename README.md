@@ -1,4 +1,4 @@
-# Control — V0.7 (chip 1: auto-kick review worker)
+# Control — V0.7 (chip 2: BYO Live multi-channel Slack)
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
 
@@ -10,7 +10,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). You land on **Now** in morning mode with the seeded Monday (9:12 AM). Default UI mode is **Demo** (`control-v0-mode`); switch to **Live** in the sidebar footer or ⌘K after watchers are configured.
+Open [http://localhost:3000](http://localhost:3000). **Dogfood = Live + your watch** (not seed). When `.control/watch.json` has a non-empty `repo` and ≥1 Slack channel and you have no saved mode preference, UI defaults to **Live**. Monday seed is only via **Load demo** (sidebar / ⌘K) — that switches to Demo without wiping the watch channel list on disk. Configure channels under **Setup** (`/settings`) or edit `watch.json`.
 
 ```bash
 npm run build   # production build
@@ -89,21 +89,26 @@ Control holds **no GitHub token**. Live credentials stay with GitHub MCP / `gh` 
 | Template (committed) | `watch.example.json` |
 | Runtime (gitignored) | `.control/watch.json` — created from the example on first API use if missing |
 
-Default fields:
+Default fields (multi-channel):
 
 ```json
 {
   "repo": "richardhorvath11/battle-buddy",
   "pr": 32,
   "workstreamId": "ws-cred",
-  "slackPrChannelId": "C0BVCSA4T2P",
-  "slackPrChannelName": "#control-e2e",
-  "teams": []
+  "teams": [],
+  "slackPrChannels": [
+    { "id": "C0BVCSA4T2P", "name": "#control-e2e" },
+    { "id": "C0BINFRA000", "name": "#infra-prs" }
+  ]
 }
 ```
 
 - `teams`: **intentional default `[]`**. Team/CODEOWNERS `review.requested` (`requested_via: "team"`) is a **no-op** until operators set **1–3** team slugs (e.g. in `.control/watch.json`). Do **not** seed `platform` (or any slug) in the default. **E2E/QA must configure `watch.teams` before B-1** (team-review scenarios); injects with unknown `team_slug` return `applied: false` and create no Needs-you.
-- `slackPrChannelId` / `slackPrChannelName`: single Slack channel for PR-link Needs-you.
+- `slackPrChannels`: list of Slack channels for PR-link Needs-you (poll **every** channel). Also accept `slackPrChannelIds: string[]` (names optional).
+- **Migration**: legacy scalar `slackPrChannelId` / `slackPrChannelName` still loads as a **one-element** list (`n=1`). Normalized config exposes derived `slackPrChannelId` (first channel) for back-compat.
+- **Configured** (Live default rule): non-empty `repo` **and** ≥1 Slack channel. Fixtures/seed stay for internal test only — not the dogfood path.
+- UI: **Setup** (`/settings`) or `GET`/`PUT` `/api/watch` to add/remove channels; persists `.control/watch.json`.
 
 ### Events in scope
 
@@ -170,7 +175,7 @@ Durable files: `.control/slack-inbox/<id>.json`. No Slack token in Control.
 
 **SlackInboxEvent** (`type: "pr_link"`): `id` (prefer `channel_ts`), `channel_id`, `message_ts`, `permalink`, `text_excerpt`, `repo`, `pr_number`, `occurred_at`, dual `provenance` (slack + github).
 
-Rules: channel must match `watch.slackPrChannelId`; PR URL must be for `watch.repo`; why = `Review ask in #control-e2e · PR #N`; watched PR attaches `workstreamId`, else ephemeral `Review · {repo}#{N}`.
+Rules: channel must be in `watch.slackPrChannels` (legacy scalar → n=1); PR URL must be for `watch.repo`; why uses the matched channel name; watched PR attaches `workstreamId`, else ephemeral `Review · {repo}#{N}`. Messages without a `watch.repo` PR URL stay ignored. No org-wide Slack.
 
 | Method | Path | Body | Response |
 |--------|------|------|----------|
@@ -220,19 +225,19 @@ curl -sS -X POST http://localhost:3000/api/github/inbox \
 - **Offline**: empty `.control/github-inbox/` + `.control/slack-inbox/`, mocked `/source/*` for seed provenance only.
 - **Live data path**: watcher POSTs events; Attention Items carry https `provenance.url` and Open source opens the real GitHub/checks page in a new tab.
 
-### Demo vs Live mode (chip 5)
+### Demo vs Live mode (chip 5 + chip 2 default)
 
-Monday seed and durable inboxes must not fight. **Not auth** — one UI control (sidebar footer toggle + ⌘K) plus optional API.
+Monday seed and durable inboxes must not fight. **Not auth** — Setup + sidebar / ⌘K plus optional API.
 
 | Mode | Boot / Now |
 |------|------------|
-| **Demo** (default) | Zustand from seed; **ignore** applying github/slack inbox into the UI (APIs still accept watcher POSTs). Banner: `Demo · seeded Monday`. |
-| **Live** | Hydrate seed skeleton only if empty; **apply** durable inboxes on load/poll (AppShell). Banner: `Live · watching {repo}#{pr}` + active follow count. |
+| **Live** | Default when watch is **configured** (repo + ≥1 Slack channel) and no saved mode preference. **Apply** durable inboxes on load/poll. Banner: `Live · {repo}` + `{n} Slack channels` (+ follows). |
+| **Demo** | **Load demo** only (not main install/dogfood). Zustand from Monday seed; **ignore** applying github/slack inbox into the UI (APIs still accept watcher POSTs). Banner: `Demo · seeded Monday`. Does **not** wipe `.control/watch.json` channel list. |
 
-- Persist: `localStorage` key **`control-v0-mode`** = `demo` or `live` (default **`demo`**).
+- Persist: `localStorage` key **`control-v0-mode`** = `demo` or `live`. If unset and watch configured → **Live**.
 - Zustand persist remains **`control-v0`** (attention, applied ids, etc.).
-- **Dogfood**: configure watchers, then **Switch to Live** so inbox rows appear; stay in Demo for Monday walkthroughs.
-- Watchers keep POSTing regardless of mode. Cap `NEEDS_YOU_EXTERNAL_CAP = 5` unchanged. pr-follows / coalesce / checkpoint merge untouched.
+- **Dogfood**: Live + your watch (Setup / `watch.json`) — not seed.
+- Watchers keep POSTing regardless of mode. Cap `NEEDS_YOU_EXTERNAL_CAP = 5` unchanged. pr-follows / coalesce / checkpoint / auto-kick untouched.
 
 ```bash
 # Optional QA echo (client still owns localStorage)
@@ -259,13 +264,13 @@ In **Live** mode, when a coalesce-class Needs-you appears (`ext-att-review-*` fr
 npx tsx scripts/smoke-auto-kick-review.ts
 ```
 
-Out of chip 1: real LLM/MCP worker, live PR snapshot panel, GitHub comment outbox, `watch.autoReview` policy, agent builder / free-form prompt, toasts, chips 2–5.
+Out of chip 1 (still cut): real LLM/MCP worker, live PR snapshot panel, GitHub comment outbox, `watch.autoReview` policy, agent builder / free-form prompt, toasts. Chip 2 adds BYO multi-channel Live setup; chips 3–5 stay cut.
 
 ### Demo / E2E reset
 
 Persisted Zustand (`localStorage` key **`control-v0`**) can pollute UI E2E after inbox floods. Reset options:
 
-1. **⌘K → “Reset demo state”** — clears `control-v0`, clears applied inbox ids, forces **Demo** (`control-v0-mode=demo`), rehydrates Monday seed. **Does not delete** inbox files or break watchers.
+1. **⌘K / sidebar → “Load demo”** — clears `control-v0`, clears applied inbox ids, forces **Demo** (`control-v0-mode=demo`), rehydrates Monday seed. **Does not delete** inbox files, **does not wipe** watch channel list, does not break watchers.
 2. **`POST /api/demo/reset`** — returns client clear instructions; optional `clearInboxes=true` (query or JSON body) deletes `.control/github-inbox/*.json` and `.control/slack-inbox/*.json`. Prefer leaving inboxes on disk. **Does not wipe** `.control/watch.json` or `.control/pr-follows.json`.
 3. **QA one-liner**: `localStorage.removeItem('control-v0')` then reload (also set `control-v0-mode` to `demo` if needed).
 
@@ -289,8 +294,10 @@ Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slac
 | Watch template | `watch.example.json` → `.control/watch.json` |
 | GitHub state | `.control/github-watcher-state.json` (gitignored) |
 | PR follows (chip 4) | `.control/pr-follows.json` (gitignored; Slack apply upserts) |
+| Slack cursor state | `.control/slack-watcher-state.json` keyed by `channel_id` → last `ts` |
 | Follow smoke | `npx tsx scripts/smoke-pr-follows.ts` |
 | Auto-kick smoke | `npx tsx scripts/smoke-auto-kick-review.ts` |
+| Multi-channel watch smoke | `npx tsx scripts/smoke-watch-multi-channel.ts` |
 
 ### One GitHub tick
 
@@ -308,15 +315,15 @@ When Slack inbox applies a `pr_link` for `watch.repo` with `pr_number ≠ watch.
 
 ### Slack MCP → helper
 
-Agent reads `watch.slackPrChannelId`, finds messages with PR URLs for `watch.repo`, then:
+Agent reads **every** `watch.slackPrChannels[]` entry (cursor per `channel_id` in `.control/slack-watcher-state.json`), finds messages with PR URLs for `watch.repo`, then:
 
 ```bash
 ./scripts/slack-pr-inbox-post.sh <channel_id> <message_ts> <permalink> <text> <repo> <pr_number>
 ```
 
-Curls `POST /api/slack/inbox`. No Slack token in repo or Control.
+Curls `POST /api/slack/inbox`. No Slack token in repo or Control. No org-wide Slack; messages without a `watch.repo` PR URL stay ignored.
 
-Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, infinite follows, raising external Needs-you cap, full checkpoint rewrite, CI↔review coalesce, auth / multi-tenant.
+Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, infinite follows, raising external Needs-you cap, full checkpoint rewrite, CI↔review coalesce, auth / multi-tenant, chips 3–5.
 
 ## Stack assumptions
 
@@ -341,6 +348,8 @@ Workstreams: Staging credential rotation (human review), Search ranking experime
 | `/workstreams/[id]` | Detail + checkpoint |
 | `/review` | Queue + workspace |
 | `/agents` | Status board |
+| `/settings` | BYO Live setup (repo, teams, multi Slack channels → `watch.json`) |
+| `GET/PUT /api/watch` | Read/write normalized multi-channel watch config |
 | `/source/slack/[id]` | Mocked Slack thread (+ harness link) |
 | `/source/github/[id]` | Mocked PR + CI + diff |
 | `/source/rfc/[id]` | Mocked RFC section |
@@ -350,12 +359,12 @@ Workstreams: Staging credential rotation (human review), Search ranking experime
 | `GET/POST /api/slack/inbox` | Durable Slack PR-link inbox (watcher → Control) |
 | `POST /api/demo/reset` | Clear demo persist instruction; optional `clearInboxes=true` (keeps watch.json / pr-follows) |
 | `GET/POST /api/demo/mode` | Optional QA mode echo (`demo` or `live`); client key `control-v0-mode` |
-| `GET /api/demo/status` | Watch repo/pr + active follow count for Live banner |
+| `GET /api/demo/status` | Watch repo + Slack channel count + follows for Live banner |
 | `POST /api/slack/outbox/:id/ack` | Mark posted after MCP send |
 | `POST /api/slack/outbox/:id/fail` | Mark failed |
 | `POST /api/slack/post` | Soft-disabled (410) |
 
-Command palette (⌘K) opens the launcher (not chat). Includes **Switch to Live / Switch to Demo** and **Reset demo state** (clears `control-v0`, forces Demo mode, rehydrates from seed without deleting inbox files).
+Command palette (⌘K) opens the launcher (not chat). Includes **Open Live setup**, **Switch to Live**, and **Load demo** (clears `control-v0`, forces Demo + Monday seed without wiping watch.json channels or inbox files).
 
 ## Click-through
 
@@ -369,4 +378,4 @@ Command palette (⌘K) opens the launcher (not chat). Includes **Switch to Live 
 
 ## Explicit cuts
 
-Team surface, auth, org-wide GitHub, multi Slack channels, webhooks-in-Control, NLP without URL, live Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological feed, agent builder / free-form prompt, real LLM worker, live PR snapshot, GitHub comment outbox, watch.autoReview policy, auto-merge, lorem, auto-send without confirm, posting outside #control-e2e, Slack app / bot-token inside Next, GitHub App / PAT inside Control, raising external Needs-you cap without product call.
+Team surface, auth, org-wide GitHub / org-wide Slack, channels without PR-URL filter, webhooks-in-Control, NLP without URL, live Calendar ingestion, chat-first UI, toasts on agent complete, inbox-shaped Now / chronological feed, agent builder / free-form prompt, real LLM worker, live Review workspace, GitHub comment outbox, watch.autoReview policy, model-agnostic runner, Team/Mac/chat-home, baking seed as default dogfood, auto-merge, lorem, auto-send without confirm, Slack app / bot-token inside Next, GitHub App / PAT inside Control, raising external Needs-you cap without product call, chips 3–5.

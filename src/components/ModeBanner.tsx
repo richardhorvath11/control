@@ -5,22 +5,28 @@ import { useControlStore } from "@/lib/store";
 
 type StatusPayload = {
   ok?: boolean;
-  watch?: { repo: string; pr: number };
+  watch?: {
+    repo: string;
+    pr: number;
+    slackChannelCount?: number;
+  };
   activeFollowCount?: number;
 };
 
 /**
- * Visible chip: Demo · seeded Monday | Live · watching {repo}#{pr} (+ follows).
+ * Visible chip: Demo · seeded Monday | Live · {repo} + {n} Slack channels (+ follows).
  */
 export function ModeBanner() {
   const seedLiveMode = useControlStore((s) => s.seedLiveMode);
   const hydrated = useControlStore((s) => s._hasHydrated);
-  const [watchLabel, setWatchLabel] = useState<string | null>(null);
+  const [repoLabel, setRepoLabel] = useState<string | null>(null);
+  const [channelCount, setChannelCount] = useState(0);
   const [followCount, setFollowCount] = useState(0);
 
   useEffect(() => {
     if (!hydrated || seedLiveMode !== "live") {
-      setWatchLabel(null);
+      setRepoLabel(null);
+      setChannelCount(0);
       setFollowCount(0);
       return;
     }
@@ -31,7 +37,12 @@ export function ModeBanner() {
         if (!res.ok) return;
         const data = (await res.json()) as StatusPayload;
         if (cancelled || !data.watch) return;
-        setWatchLabel(`${data.watch.repo}#${data.watch.pr}`);
+        setRepoLabel(data.watch.repo);
+        setChannelCount(
+          typeof data.watch.slackChannelCount === "number"
+            ? data.watch.slackChannelCount
+            : 0
+        );
         setFollowCount(
           typeof data.activeFollowCount === "number" ? data.activeFollowCount : 0
         );
@@ -65,16 +76,20 @@ export function ModeBanner() {
     );
   }
 
+  const n = channelCount;
   return (
     <div
       className="border-b border-border bg-raised/80 px-4 py-1.5 flex items-center gap-2 text-[12px]"
       data-mode="live"
     >
       <span className="chip border-running/40 text-running">
-        Live · watching {watchLabel ?? "…"}
+        Live · {repoLabel ?? "…"}
       </span>
       <span className="text-muted tabular-nums">
-        {followCount} follow{followCount === 1 ? "" : "s"}
+        {n} Slack channel{n === 1 ? "" : "s"}
+      </span>
+      <span className="text-muted tabular-nums">
+        · {followCount} follow{followCount === 1 ? "" : "s"}
       </span>
     </div>
   );

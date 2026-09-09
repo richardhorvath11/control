@@ -1,9 +1,12 @@
 {
   "_comment_teams": "INTENTIONAL DEFAULT: teams is []. CODEOWNERS/team review.requested is a no-op until operators set 1–3 team slugs here (or in .control/watch.json). Do NOT seed platform. E2E/QA must configure teams before B-1 team-review scenarios.",
+  "_comment_slack": "Multi-channel (V0.7 chip 2). Prefer slackPrChannels[{id,name}]. Also accept slackPrChannelIds:string[]. Legacy scalar slackPrChannelId / slackPrChannelName migrates to a one-element list on read.",
   "repo": "richardhorvath11/battle-buddy",
   "pr": 32,
   "workstreamId": "ws-cred",
-  "slackPrChannelId": "C0BVCSA4T2P",
-  "slackPrChannelName": "#control-e2e",
-  "teams": []
+  "teams": [],
+  "slackPrChannels": [
+    { "id": "C0BVCSA4T2P", "name": "#control-e2e" },
+    { "id": "C0BINFRA000", "name": "#infra-prs" }
+  ]
 }

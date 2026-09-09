@@ -272,7 +272,12 @@ primary_pr = watch.get("pr")
 primary_ws = str(watch.get("workstreamId") or "").strip() or None
 teams_raw = watch.get("teams") if isinstance(watch.get("teams"), list) else []
 watch_teams = {str(t).strip() for t in teams_raw if str(t).strip()}
+channels = watch.get("slackPrChannels") or []
 slack_ch = str(watch.get("slackPrChannelId") or "").strip()
+if not slack_ch and isinstance(channels, list) and channels:
+    first = channels[0] if isinstance(channels[0], dict) else {}
+    slack_ch = str(first.get("id") or "").strip()
+slack_channel_count = len(channels) if isinstance(channels, list) and channels else (1 if slack_ch else 0)
 
 if not repo or not isinstance(primary_pr, int):
     print("error: watch.json needs string repo and numeric pr", file=sys.stderr)

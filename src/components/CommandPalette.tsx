@@ -36,23 +36,32 @@ export function CommandPalette() {
         run: () => router.push("/workstreams"),
       },
       {
+        id: "settings",
+        label: "Open Live setup",
+        run: () => router.push("/settings"),
+      },
+      {
         id: "focus",
         label: mode === "focus" ? "End focus" : "Start focus",
         run: () => (mode === "focus" ? endFocus() : startFocus()),
       },
+      ...(seedLiveMode === "demo"
+        ? [
+            {
+              id: "switch-live",
+              label: "Switch to Live",
+              run: () => {
+                setSeedLiveMode("live");
+                router.push("/now");
+              },
+            },
+          ]
+        : []),
       {
-        id: "switch-mode",
-        label:
-          seedLiveMode === "live" ? "Switch to Demo" : "Switch to Live",
+        id: "load-demo",
+        label: "Load demo",
         run: () => {
-          setSeedLiveMode(seedLiveMode === "live" ? "demo" : "live");
-          router.push("/now");
-        },
-      },
-      {
-        id: "reset-demo",
-        label: "Reset demo state",
-        run: () => {
+          // Seeds Monday + Demo; does NOT wipe .control/watch.json channel list.
           resetDemoState();
           router.push("/now");
         },

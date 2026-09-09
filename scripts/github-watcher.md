@@ -14,8 +14,8 @@ Control holds **no** GitHub token. This host runs `gh` (authenticated) and POSTs
 | `repo` | `richardhorvath11/battle-buddy` |
 | `pr` | `32` |
 | `workstreamId` | `ws-cred` |
-| `slackPrChannelId` | `C0BVCSA4T2P` |
-| `slackPrChannelName` | `#control-e2e` |
+| `slackPrChannels` | multi-channel list (see `watch.example.json`); legacy scalar still loads |
+| `slackPrChannelId` | derived first channel (back-compat) |
 | `teams` | **`[]` (intentional).** Team/CODEOWNERS `review.requested` is never emitted until operators list 1–3 slugs. |
 
 ## One tick

@@ -6,6 +6,7 @@ import { CommandPalette } from "./CommandPalette";
 import { ConfirmModal } from "./ConfirmModal";
 import { ModeBanner } from "./ModeBanner";
 import { useControlStore } from "@/lib/store";
+import { hasSeedLiveModePreference } from "@/lib/seed-live-mode";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const setLauncherOpen = useControlStore((s) => s.setLauncherOpen);
@@ -18,6 +19,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       // Live only: pull durable GitHub/Slack inbox effects after hydrate.
       // Demo: skip apply so Monday seed is not overwritten by disk inboxes.
       void useControlStore.getState().syncExternalInboxes();
+      // First run / new install: if watch configured and no mode preference → Live.
+      // Monday seed only via Load demo (not this path).
+      void (async () => {
+        if (hasSeedLiveModePreference()) return;
+        try {
+          const res = await fetch("/api/watch");
+          if (!res.ok) return;
+          const data = (await res.json()) as {
+            watch?: { configured?: boolean };
+          };
+          if (data.watch?.configured) {
+            useControlStore.getState().setSeedLiveMode("live");
+          }
+        } catch {
+          /* offline */
+        }
+      })();
     });
     void useControlStore.persist.rehydrate();
     return unsub;

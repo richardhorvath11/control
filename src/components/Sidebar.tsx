@@ -9,6 +9,7 @@ import {
   ScanSearch,
   Bot,
   Focus,
+  Settings,
 } from "lucide-react";
 import { useControlStore } from "@/lib/store";
 
@@ -17,6 +18,7 @@ const nav = [
   { href: "/workstreams", label: "Workstreams", icon: GitBranch },
   { href: "/review", label: "Review", icon: ScanSearch, badge: true },
   { href: "/agents", label: "Agents", icon: Bot, running: true },
+  { href: "/settings", label: "Setup", icon: Settings },
 ];
 
 function phaseDot(phase: string) {
@@ -129,11 +131,11 @@ export function Sidebar() {
               ? "border-running/40 text-running"
               : "border-amber/40 text-amber"
           }`}
-          title="Demo keeps Monday seed; Live applies durable inboxes"
+          title="Live = your watch/inboxes. Load demo = Monday seed (does not wipe watch.json channels)."
         >
           <span>{seedLiveMode === "live" ? "Live" : "Demo"}</span>
           <span className="text-[10px] text-muted font-normal">
-            {seedLiveMode === "live" ? "Switch to Demo" : "Switch to Live"}
+            {seedLiveMode === "live" ? "Load demo" : "Switch to Live"}
           </span>
         </button>
         <button

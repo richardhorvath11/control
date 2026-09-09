@@ -4,6 +4,7 @@ import {
   CONTROL_DIR,
   ensureControlDir,
   ensureWatchConfig,
+  findSlackPrChannel,
   type WatchConfig,
 } from "./github-inbox";
 import { NEEDS_YOU_EXTERNAL_CAP } from "./github-constants";
@@ -339,15 +340,17 @@ export function routeSlackEvent(
   event: SlackInboxEvent,
   watch: WatchConfig
 ): SlackRoutingEffects {
-  // Wrong channel → ignore
-  if (event.channel_id !== watch.slackPrChannelId) {
+  // Channel must be in watch.slackPrChannels (multi-channel; legacy scalar → n=1)
+  const matchedChannel = findSlackPrChannel(watch, event.channel_id);
+  if (!matchedChannel) {
+    const allowed = watch.slackPrChannels.map((c) => c.id).join(",") || "(none)";
     return {
       attention: null,
       fyiLine: null,
       workstreamPatch: null,
       newWorkstream: null,
       ignored: true,
-      ignoreReason: `channel_id ${event.channel_id} != watch.slackPrChannelId ${watch.slackPrChannelId}`,
+      ignoreReason: `channel_id ${event.channel_id} not in watch.slackPrChannels [${allowed}]`,
     };
   }
 
@@ -364,7 +367,9 @@ export function routeSlackEvent(
   }
 
   const channelLabel =
-    watch.slackPrChannelName?.trim() || "#control-e2e";
+    matchedChannel.name?.trim() ||
+    watch.slackPrChannelName?.trim() ||
+    "#control-e2e";
   const why = `Review ask in ${channelLabel}`;
   const key = slackDedupeKey(event);
   const coalesceKey = reviewAskCoalesceKey(event.repo, event.pr_number);

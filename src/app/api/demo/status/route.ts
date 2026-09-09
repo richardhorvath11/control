@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
-import { CONTROL_DIR, ensureWatchConfig } from "@/lib/github-inbox";
+import {
+  CONTROL_DIR,
+  ensureWatchConfig,
+  isWatchConfigured,
+} from "@/lib/github-inbox";
 import { NEEDS_YOU_EXTERNAL_CAP } from "@/lib/github-constants";
 import { parseSeedLiveMode } from "@/lib/seed-live-mode";
 import {
@@ -37,12 +41,15 @@ export async function GET() {
         repo: watch.repo,
         pr: watch.pr,
         workstreamId: watch.workstreamId,
+        slackPrChannels: watch.slackPrChannels,
+        slackChannelCount: watch.slackPrChannels.length,
+        configured: isWatchConfigured(watch),
       },
       activeFollowCount: follows.length,
       needsYouCap: NEEDS_YOU_EXTERNAL_CAP,
       label:
         serverMode === "live"
-          ? `Live · watching ${watch.repo}#${watch.pr}`
+          ? `Live · ${watch.repo} · ${watch.slackPrChannels.length} Slack channels`
           : "Demo · seeded Monday",
     });
   } catch (err) {

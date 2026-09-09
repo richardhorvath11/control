@@ -58,15 +58,27 @@ export interface GitHubInboxEvent {
   requested_user?: string;
 }
 
+/** One Slack channel watched for PR-link → Needs-you (V0.7 chip 2). */
+export interface SlackPrChannel {
+  id: string;
+  /** Display name for Needs-you why (e.g. #pr-reviews) */
+  name?: string;
+}
+
 export interface WatchConfig {
   repo: string;
   pr: number;
   workstreamId: string;
   /** Team/CODEOWNERS slugs that may create Needs-you on review.requested */
   teams: string[];
-  /** Single Slack channel watched for PR-link → Needs-you */
+  /** Slack channels watched for PR-link → Needs-you (multi-channel; ≥1 for Live). */
+  slackPrChannels: SlackPrChannel[];
+  /**
+   * Derived: first channel id (back-compat for callers / scripts that still
+   * read a scalar). Prefer `slackPrChannels`.
+   */
   slackPrChannelId: string;
-  /** Display name for Needs-you why (e.g. #control-e2e) */
+  /** Derived: first channel name (back-compat). Prefer `slackPrChannels`. */
   slackPrChannelName?: string;
 }
 
@@ -134,6 +146,10 @@ const DEFAULT_WATCH: WatchConfig = {
   pr: 32,
   workstreamId: "ws-cred",
   teams: [],
+  slackPrChannels: [
+    { id: "C0BVCSA4T2P", name: "#control-e2e" },
+    { id: "C0BINFRA000", name: "#infra-prs" },
+  ],
   slackPrChannelId: "C0BVCSA4T2P",
   slackPrChannelName: "#control-e2e",
 };
@@ -162,29 +178,104 @@ export async function ensureWatchConfig(): Promise<WatchConfig> {
   await ensureControlDir();
   try {
     const raw = await fs.readFile(WATCH_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<WatchConfig>;
+    const parsed = JSON.parse(raw) as WatchConfigInput;
     return normalizeWatch(parsed);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== "ENOENT") throw err;
   }
 
-  let fromExample: Partial<WatchConfig> | null = null;
+  let fromExample: WatchConfigInput | null = null;
   try {
     const raw = await fs.readFile(WATCH_EXAMPLE_PATH, "utf8");
-    fromExample = JSON.parse(raw) as Partial<WatchConfig>;
+    fromExample = JSON.parse(raw) as WatchConfigInput;
   } catch {
     fromExample = null;
   }
 
   const watch = normalizeWatch(fromExample ?? DEFAULT_WATCH);
-  const tmp = `${WATCH_PATH}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(watch, null, 2) + "\n", "utf8");
-  await fs.rename(tmp, WATCH_PATH);
-  return watch;
+  return writeWatchConfig(watch);
 }
 
-function normalizeWatch(input: Partial<WatchConfig> | null): WatchConfig {
+/** Raw on-disk / API body before normalize (accepts legacy scalars). */
+export type WatchConfigInput = Partial<WatchConfig> & {
+  /** Alternate list form: ids only (names optional / omitted). */
+  slackPrChannelIds?: string[];
+};
+
+function channelIdOk(id: string): boolean {
+  return /^[A-Z0-9][A-Z0-9_-]{0,30}$/i.test(id.trim());
+}
+
+function normalizeSlackChannels(input: WatchConfigInput | null): SlackPrChannel[] {
+  const out: SlackPrChannel[] = [];
+  const seen = new Set<string>();
+  const push = (idRaw: unknown, nameRaw?: unknown) => {
+    if (typeof idRaw !== "string" || !idRaw.trim()) return;
+    const id = idRaw.trim();
+    if (!channelIdOk(id) || seen.has(id)) return;
+    seen.add(id);
+    const name =
+      typeof nameRaw === "string" && nameRaw.trim()
+        ? nameRaw.trim()
+        : undefined;
+    out.push(name ? { id, name } : { id });
+  };
+
+  if (Array.isArray(input?.slackPrChannels)) {
+    for (const ch of input!.slackPrChannels) {
+      if (!ch || typeof ch !== "object") continue;
+      push((ch as SlackPrChannel).id, (ch as SlackPrChannel).name);
+    }
+  }
+  if (out.length === 0 && Array.isArray(input?.slackPrChannelIds)) {
+    for (const id of input!.slackPrChannelIds) push(id);
+  }
+  // Legacy scalar → one-element list
+  if (out.length === 0 && typeof input?.slackPrChannelId === "string") {
+    push(input.slackPrChannelId, input.slackPrChannelName);
+  }
+  if (out.length === 0) {
+    return DEFAULT_WATCH.slackPrChannels.map((c) => ({ ...c }));
+  }
+  return out;
+}
+
+/**
+ * Watch is "configured" for Live default when repo is non-empty and ≥1 Slack
+ * channel is listed. Fixtures/seed stay for internal test only.
+ */
+export function isWatchConfigured(watch: Pick<WatchConfig, "repo" | "slackPrChannels">): boolean {
+  return !!watch.repo.trim() && watch.slackPrChannels.length >= 1;
+}
+
+/** Serialize for disk / API — multi-channel shape (no legacy scalars required). */
+export function serializeWatch(watch: WatchConfig): Record<string, unknown> {
+  return {
+    repo: watch.repo,
+    pr: watch.pr,
+    workstreamId: watch.workstreamId,
+    teams: watch.teams,
+    slackPrChannels: watch.slackPrChannels.map((c) =>
+      c.name ? { id: c.id, name: c.name } : { id: c.id }
+    ),
+  };
+}
+
+export async function writeWatchConfig(watch: WatchConfig): Promise<WatchConfig> {
+  await ensureControlDir();
+  const normalized = normalizeWatch(watch);
+  const tmp = `${WATCH_PATH}.tmp`;
+  await fs.writeFile(
+    tmp,
+    JSON.stringify(serializeWatch(normalized), null, 2) + "\n",
+    "utf8"
+  );
+  await fs.rename(tmp, WATCH_PATH);
+  return normalized;
+}
+
+export function normalizeWatch(input: WatchConfigInput | null): WatchConfig {
   const repo =
     typeof input?.repo === "string" && input.repo.trim()
       ? input.repo.trim()
@@ -202,16 +293,28 @@ function normalizeWatch(input: Partial<WatchConfig> | null): WatchConfig {
         .filter((t): t is string => typeof t === "string" && !!t.trim())
         .map((t) => t.trim())
     : [...DEFAULT_WATCH.teams];
-  const slackPrChannelId =
-    typeof input?.slackPrChannelId === "string" && input.slackPrChannelId.trim()
-      ? input.slackPrChannelId.trim()
-      : DEFAULT_WATCH.slackPrChannelId;
+  const slackPrChannels = normalizeSlackChannels(input);
+  const slackPrChannelId = slackPrChannels[0]?.id ?? DEFAULT_WATCH.slackPrChannelId;
   const slackPrChannelName =
-    typeof input?.slackPrChannelName === "string" &&
-    input.slackPrChannelName.trim()
-      ? input.slackPrChannelName.trim()
-      : DEFAULT_WATCH.slackPrChannelName;
-  return { repo, pr, workstreamId, teams, slackPrChannelId, slackPrChannelName };
+    slackPrChannels[0]?.name ?? DEFAULT_WATCH.slackPrChannelName;
+  return {
+    repo,
+    pr,
+    workstreamId,
+    teams,
+    slackPrChannels,
+    slackPrChannelId,
+    slackPrChannelName,
+  };
+}
+
+/** Look up a watched Slack channel (id match) or null. */
+export function findSlackPrChannel(
+  watch: WatchConfig,
+  channelId: string
+): SlackPrChannel | null {
+  const id = channelId.trim();
+  return watch.slackPrChannels.find((c) => c.id === id) ?? null;
 }
 
 /**
