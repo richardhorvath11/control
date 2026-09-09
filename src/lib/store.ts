@@ -34,8 +34,14 @@ import {
   buildPrReviewItem,
   parseRepoPrFromCoalesceKey,
   prReviewSimDelayMs,
+  repoPrFromAttention,
   type StartPrReviewWorkerArgs,
 } from "./pr-review-worker";
+import {
+  NO_REVIEW_BACKEND_DETAIL,
+  buildReviewItemFromResult,
+  type ControlReviewResultV1,
+} from "./review-runner";
 
 const initial = seed as SeedData;
 
@@ -169,9 +175,11 @@ interface ControlState {
   delegate: (delegationId: string) => void;
   delegateAttention: (attentionId: string) => void;
   /**
-   * Enqueue canned independent PR review worker (Running → Complete → Review).
+   * Enqueue independent PR review worker (Running → Complete/Failed → Review).
+   * Live: write control.review_job.v1 → control-review-run → map result (no invented findings).
+   * Demo: local sim findings (fake backend is test-only; Live default is NOT fake).
    * Auto: Live only, once per auto-review:{coalesceKey}; does not resolve Needs-you.
-   * Manual: existing Delegate path; may resolve attention when attentionId set.
+   * Manual: same runner path as auto-kick; may resolve attention when attentionId set.
    */
   startPrReviewWorker: (args: StartPrReviewWorkerArgs) => void;
   /** Live: auto-kick once per coalesce-class Needs-you not yet in autoKickedReviewKeys. */
@@ -715,7 +723,6 @@ export const useControlStore = create<ControlState>()(
         }
 
         const agentId = uid("agent");
-        const delay = prReviewSimDelayMs();
         const newAgent = buildPrReviewAgent({
           id: agentId,
           repo,
@@ -736,20 +743,9 @@ export const useControlStore = create<ControlState>()(
         const provenance = args.attentionProvenance;
         const workstreamId = args.workstreamId;
         const source = args.source;
+        const live = get().seedLiveMode === "live";
 
-        window.setTimeout(() => {
-          const reviewId = uid("rev");
-          const findingId = uid("f");
-          const reviewItem = buildPrReviewItem({
-            id: reviewId,
-            findingId,
-            repo,
-            pr,
-            workstreamId,
-            agentId,
-            attentionProvenance: provenance,
-          });
-
+        const landOk = (reviewItem: ReviewItem, summaryDetail?: string) => {
           set({
             agents: get().agents.map((a) =>
               a.id === agentId
@@ -757,9 +753,9 @@ export const useControlStore = create<ControlState>()(
                     ...a,
                     status: "Complete",
                     needsReview: true,
-                    reviewItemId: reviewId,
+                    reviewItemId: reviewItem.id,
                     completedAt: "just now",
-                    detail: "Complete — waiting in Review.",
+                    detail: summaryDetail ?? "Complete — waiting in Review.",
                   }
                 : a
             ),
@@ -791,6 +787,114 @@ export const useControlStore = create<ControlState>()(
               );
             }
           }
+        };
+
+        const landFailed = (detail: string, blocked = false) => {
+          set({
+            agents: get().agents.map((a) =>
+              a.id === agentId
+                ? {
+                    ...a,
+                    status: blocked ? "Blocked on permission" : "Failed",
+                    completedAt: "just now",
+                    detail,
+                    needsReview: false,
+                  }
+                : a
+            ),
+            workstreams: get().workstreams.map((w) => {
+              if (!workstreamId || w.id !== workstreamId) return w;
+              const agentIds = w.agentIds.includes(agentId)
+                ? w.agentIds
+                : [...w.agentIds, agentId];
+              return { ...w, agentIds, lastActive: "just now" };
+            }),
+          });
+        };
+
+        // Live: write job → control-review-run → map result. Never invent findings.
+        if (live) {
+          void (async () => {
+            try {
+              const res = await fetch("/api/review/run", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  repo,
+                  pr,
+                  workstream_id: workstreamId,
+                  attention_id: args.attentionId,
+                  provenance: provenance ?? [],
+                }),
+              });
+              const data = (await res.json().catch(() => ({}))) as {
+                ok?: boolean;
+                code?: string;
+                error?: string;
+                result?: ControlReviewResultV1;
+              };
+
+              if (res.status === 503 || data.code === "NO_BACKEND") {
+                landFailed(
+                  data.error?.trim() || NO_REVIEW_BACKEND_DETAIL,
+                  true
+                );
+                return;
+              }
+
+              if (!res.ok || !data.ok || !data.result) {
+                landFailed(
+                  data.error?.trim() ||
+                    data.result?.summary?.trim() ||
+                    "Review runner failed"
+                );
+                return;
+              }
+
+              const result = data.result;
+              if (result.status === "error") {
+                landFailed(
+                  result.summary?.trim() || "Agent Failed",
+                  /not configured|No review backend/i.test(result.summary ?? "")
+                );
+                return;
+              }
+
+              const reviewId = uid("rev");
+              const reviewItem = buildReviewItemFromResult({
+                id: reviewId,
+                findingIdPrefix: uid("f"),
+                repo,
+                pr,
+                workstreamId,
+                agentId,
+                result,
+              });
+              landOk(reviewItem);
+            } catch (err) {
+              landFailed(
+                err instanceof Error ? err.message : "Review runner request failed"
+              );
+            }
+          })();
+          return;
+        }
+
+        // Demo: keep local sim (or operators may point Live smoke at fake separately).
+        const delay = prReviewSimDelayMs();
+        window.setTimeout(() => {
+          const reviewId = uid("rev");
+          const findingId = uid("f");
+          const reviewItem = buildPrReviewItem({
+            id: reviewId,
+            findingId,
+            repo,
+            pr,
+            workstreamId,
+            agentId,
+            attentionProvenance: provenance,
+          });
+          landOk(reviewItem);
         }, delay);
       },
 
@@ -823,6 +927,38 @@ export const useControlStore = create<ControlState>()(
           (d) => d.id === delegationId
         );
         if (!del || get().usedDelegationIds.includes(delegationId)) return;
+
+        // Chip 3: manual PR review uses the same startPrReviewWorker path as auto-kick.
+        if (del.kind === "pr_review") {
+          set({
+            usedDelegationIds: [...get().usedDelegationIds, delegationId],
+          });
+          let repo = "richardhorvath11/battle-buddy";
+          let pr = 32;
+          let attentionProvenance = undefined as
+            | import("./types").Provenance[]
+            | undefined;
+          if (del.attentionId) {
+            const att = get().attention.find((a) => a.id === del.attentionId);
+            if (att) {
+              attentionProvenance = att.provenance;
+              const parsed = repoPrFromAttention(att);
+              if (parsed) {
+                repo = parsed.repo;
+                pr = parsed.pr;
+              }
+            }
+          }
+          get().startPrReviewWorker({
+            repo,
+            pr,
+            workstreamId: del.workstreamId,
+            attentionId: del.attentionId,
+            source: "manual",
+            attentionProvenance,
+          });
+          return;
+        }
 
         const agentId = uid("agent");
         const delay = prReviewSimDelayMs();
@@ -913,43 +1049,6 @@ export const useControlStore = create<ControlState>()(
               status: "pending",
               agentId,
             };
-          } else if (del.kind === "pr_review") {
-            reviewItem = {
-              id: reviewId,
-              kind: "pr_review",
-              title: "Independent review of fix/staging-cred-rotation (fresh)",
-              workstreamId: wsId,
-              label: "Analysis, not truth",
-              analysisNote:
-                "Second-pass review. Findings are claims with evidence.",
-              findings: [
-                {
-                  id: uid("f"),
-                  title: "Retry constant still diverges from RFC §4.2",
-                  body: "MAX_RETRIES remains 5. Same conflict as the Sunday review.",
-                  evidence: [
-                    {
-                      kind: "rfc",
-                      title: "RFC §4.2",
-                      locator: "§4.2",
-                      excerpt: "MUST NOT exceed three retries",
-                      sourceId: "rfc-cred",
-                    },
-                    {
-                      kind: "github",
-                      title: "retry.ts:48",
-                      locator: "packages/creds/src/retry.ts:48",
-                      excerpt: "const MAX_RETRIES = 5",
-                      sourceId: "pr-cred",
-                    },
-                  ],
-                },
-              ],
-              scopeFooter:
-                "Examined 8 files · 2 callers · 1 RFC. Absence of findings is not approval.",
-              status: "pending",
-              agentId,
-            };
           } else {
             reviewItem = {
               id: reviewId,
@@ -1023,6 +1122,22 @@ export const useControlStore = create<ControlState>()(
       },
 
       delegateAttention: (attentionId) => {
+        const attEarly = get().attention.find((a) => a.id === attentionId);
+        // Chip 3: review-ask Delegate uses same runner path as auto-kick.
+        if (attEarly && isReviewAskNeedsYou(attEarly)) {
+          const parsed = repoPrFromAttention(attEarly);
+          if (parsed) {
+            get().startPrReviewWorker({
+              repo: parsed.repo,
+              pr: parsed.pr,
+              workstreamId: attEarly.workstreamId,
+              attentionId: attEarly.id,
+              source: "manual",
+              attentionProvenance: attEarly.provenance,
+            });
+            return;
+          }
+        }
         const matching = get().suggestedDelegations.find(
           (d) => d.attentionId === attentionId
         );
@@ -1031,7 +1146,7 @@ export const useControlStore = create<ControlState>()(
           return;
         }
         // Generic investigate for attention without canned delegation
-        const att = get().attention.find((a) => a.id === attentionId);
+        const att = attEarly ?? get().attention.find((a) => a.id === attentionId);
         if (!att) return;
         const syntheticId = uid("del");
         set({

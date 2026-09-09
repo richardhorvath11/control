@@ -1,4 +1,4 @@
-# Control — V0.7 (chip 2: BYO Live multi-channel Slack)
+# Control — V0.7 (chip 3: Review runner invoke hook)
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
 
@@ -249,12 +249,12 @@ curl -sS http://localhost:3000/api/demo/status
 
 ### Live auto-kick review worker (V0.7 chip 1)
 
-In **Live** mode, when a coalesce-class Needs-you appears (`ext-att-review-*` from Slack `pr_link` and/or GitHub `review.requested`), Control **automatically** enqueues one canned independent PR review worker bound to that `repo#PR` + workstream.
+In **Live** mode, when a coalesce-class Needs-you appears (`ext-att-review-*` from Slack `pr_link` and/or GitHub `review.requested`), Control **automatically** enqueues one independent PR review worker bound to that `repo#PR` + workstream.
 
 | | |
 |--|--|
 | Idempotency | `auto-review:{coalesceKey}` persisted in Zustand (`autoKickedReviewKeys`) — refresh / second Slack+GitHub merge does not double-kick |
-| Agent | `Independent review · {repo}#{pr}` · Running → Complete (simulated 3–8s) |
+| Agent | `Independent review · {repo}#{pr}` · Running → Complete / Failed |
 | Landing | Findings → **Review only** (badge++); **no toast**; Needs-you stays open |
 | Demo | Auto-kick **disabled**; Monday seed + manual Delegate unchanged |
 | Demo reset | Clears `autoKickedReviewKeys` so a later Live session can kick again |
@@ -264,7 +264,73 @@ In **Live** mode, when a coalesce-class Needs-you appears (`ext-att-review-*` fr
 npx tsx scripts/smoke-auto-kick-review.ts
 ```
 
-Out of chip 1 (still cut): real LLM/MCP worker, live PR snapshot panel, GitHub comment outbox, `watch.autoReview` policy, agent builder / free-form prompt, toasts. Chip 2 adds BYO multi-channel Live setup; chips 3–5 stay cut.
+### Review runner invoke hook (V0.7 chip 3)
+
+**Not a skill.** Chip 3 ships a configurable invoke wrapper: Control writes `control.review_job.v1`, runs an operator-configured backend via `./scripts/control-review-run`, reads `control.review_result.v1`, and lands findings in Review (Analysis-not-truth). Operators point env at “run this command / Claude CLI / later Cursor cloud.” **Do not** ship a pr-review skill, plugin, or prompt library in-product.
+
+#### CLI
+
+```bash
+./scripts/control-review-run --in job.json --out result.json
+# Exit: 0 ok · 2 retryable · 3 bad parse/job · 4 backend missing
+```
+
+Job → `.control/review-jobs/{job_id}.json` (and/or `--in`):
+
+```json
+{
+  "schema": "control.review_job.v1",
+  "job_id": "rj-…",
+  "repo": "owner/name",
+  "pr": 32,
+  "head_sha": "optional",
+  "workstream_id": "optional",
+  "attention_id": "optional",
+  "provenance": [],
+  "snapshot_path": "optional"
+}
+```
+
+Result ← `--out` (or backend stdout when using `command`):
+
+```json
+{
+  "schema": "control.review_result.v1",
+  "job_id": "rj-…",
+  "status": "ok",
+  "summary": "…",
+  "findings": [{ "title": "…", "body": "…", "evidence": [] }],
+  "scope": { "notes": "…" }
+}
+```
+
+#### Env knobs
+
+| Knob | Values |
+|------|--------|
+| `CONTROL_REVIEW_BACKEND` | `claude-cli` \| `cursor-cloud` \| `fake` \| `command` |
+| `CONTROL_REVIEW_COMMAND` | Optional when `command` — e.g. `my-pr-review --in {{in}} --out {{out}}` |
+
+| Backend | Behavior |
+|---------|----------|
+| `claude-cli` | Invoke Claude CLI with job JSON; parse into result (retry once on parse fail). Minimal glue prompt **inside the wrapper only**. If `claude` missing → exit 4. |
+| `cursor-cloud` | Stub: result `status: error` / “cursor-cloud not configured”; same `--in`/`--out` shape. |
+| `fake` | Templated fixture findings — **CI/smoke/Demo QA only**. **Live must not default here.** |
+| `command` | Spawn operator command with `{{in}}` / `{{out}}` substituted. |
+
+**Live default:** `CONTROL_REVIEW_BACKEND` unset → Agent **Failed/Blocked** with “No review backend” — **no invented findings**. Set the env explicitly for Live (prefer `command` or `claude-cli`; use `fake` only for smoke).
+
+Demo keeps the local sim timer for Monday narrative; Live always goes through `POST /api/review/run` → `control-review-run`. Manual **Delegate** PR review uses the same `startPrReviewWorker` path as auto-kick.
+
+Job/result files live under gitignored `.control/review-jobs/`. No model / GitHub / Slack tokens added to Control.
+
+```bash
+npx tsx scripts/smoke-review-runner.ts
+# probe (dev server):
+curl -sS http://localhost:3000/api/review/run
+```
+
+Out of chip 3 (still cut): full pr-review skill/plugin/prompt pack · agent builder · free-form prompt IDE · vendor-locked schema · fake-as-Live-default · live Review snapshot chrome · GitHub outbox · Team/Mac/chat-home · chips 4–5.
 
 ### Demo / E2E reset
 
@@ -297,7 +363,9 @@ Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slac
 | Slack cursor state | `.control/slack-watcher-state.json` keyed by `channel_id` → last `ts` |
 | Follow smoke | `npx tsx scripts/smoke-pr-follows.ts` |
 | Auto-kick smoke | `npx tsx scripts/smoke-auto-kick-review.ts` |
+| Review runner smoke | `npx tsx scripts/smoke-review-runner.ts` |
 | Multi-channel watch smoke | `npx tsx scripts/smoke-watch-multi-channel.ts` |
+| Review runner CLI | `./scripts/control-review-run --in job.json --out result.json` |
 
 ### One GitHub tick
 
@@ -330,7 +398,7 @@ Out of chip: org-wide / multi-repo, webhooks-in-Control, fuzzy NLP, infinite fol
 - **Next.js App Router** + TypeScript + Tailwind CSS
 - **Zustand** client store hydrated from `src/lib/seed.json`
 - No auth, no live Slack ingestion, no database, **no GitHub/Slack tokens in Control**
-- Agent delegation + Live auto-kick PR review simulated with a 3-8s timer; completion increments the Review badge only (no toasts)
+- Agent delegation + Live auto-kick PR review via configurable `control-review-run` backend (Demo keeps 3–8s sim); completion increments the Review badge only (no toasts)
 - Slack write for the Priya draft only (confirm-gated outbox -> MCP)
 
 ## Seeded Monday

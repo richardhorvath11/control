@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# control-review-run — V0.7 chip 3 review invoke hook wrapper (NOT a skill).
+# See scripts/control-review-run.mjs and README (CONTROL_REVIEW_BACKEND).
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+exec node "$ROOT/scripts/control-review-run.mjs" "$@"

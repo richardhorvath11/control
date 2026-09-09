@@ -1,6 +1,8 @@
 /**
- * V0.7 chip 1 — Auto-kick / manual independent PR review worker (simulated).
- * Real model I/O, snapshot UI, GitHub outbox = later chips.
+ * V0.7 chip 1 + chip 3 — Auto-kick / manual independent PR review worker.
+ * Chip 3: Live invokes scripts/control-review-run (configurable backend);
+ * Demo keeps local sim. Fake backend = test-only; Live default is NOT fake.
+ * Snapshot UI / GitHub outbox / skill packs = later chips (cut).
  */
 
 import type { Agent, AttentionItem, Finding, Provenance, ReviewItem } from "./types";
