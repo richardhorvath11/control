@@ -86,6 +86,7 @@ fi
 
 # --- load watch + follows + previous state, fetch PRs, diff, post ---
 export ROOT WATCH_PATH STATE_PATH FOLLOWS_PATH SNAP_DIR INBOX_URL CONTROL_BASE_URL DRY_RUN FORCE_POST
+set +e
 python3 - <<'PY'
 from __future__ import annotations
 
@@ -821,3 +822,22 @@ print(
 if any_posted_fail:
     sys.exit(2)
 PY
+
+
+# V0.9 chip 2 / V0.8 chip 5: heartbeat for Agents board (HTTP only).
+TICK_EXIT=$?
+STATUS_URL="${CONTROL_BASE_URL%/}/api/watchers/status"
+if [[ "$DRY_RUN" != "1" ]]; then
+  if [[ "$TICK_EXIT" -eq 0 ]]; then
+    curl -sS -X PUT "$STATUS_URL" \
+      -H 'Content-Type: application/json' \
+      -d '{"id":"github-watch","status":"ticking","last_action":"diffed primary + follows"}' \
+      >/dev/null 2>&1 || true
+  else
+    curl -sS -X PUT "$STATUS_URL" \
+      -H 'Content-Type: application/json' \
+      -d '{"id":"github-watch","status":"error","last_action":"tick failed"}' \
+      >/dev/null 2>&1 || true
+  fi
+fi
+exit "$TICK_EXIT"

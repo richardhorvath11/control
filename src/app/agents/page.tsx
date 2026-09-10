@@ -69,8 +69,10 @@ export default function AgentsPage() {
       <header>
         <h1 className="text-[20px] font-semibold leading-7">Agents</h1>
         <p className="text-[12px] text-muted mt-1">
-          Status board — not a builder. {running.length} running · watchers via
-          HTTP status API.
+          Status board — not a builder. {running.length} running · watchers via HTTP status API.{" "}
+          <Link href="/get-live/workers" className="text-review hover:underline">
+            Start workers
+          </Link>
         </p>
       </header>
 

@@ -12,7 +12,7 @@ import { hasSeedLiveModePreference } from "@/lib/seed-live-mode";
 type Gate = "pending" | "wizard" | "app";
 
 function isGetLivePath(pathname: string | null): boolean {
-  return pathname === "/get-live" || pathname === "/onboarding";
+  return pathname === "/get-live" || pathname === "/get-live/workers" || pathname === "/onboarding";
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {

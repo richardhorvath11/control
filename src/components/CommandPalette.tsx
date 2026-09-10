@@ -46,6 +46,11 @@ export function CommandPalette() {
         run: () => router.push("/get-live"),
       },
       {
+        id: "get-live-workers",
+        label: "Start workers checklist",
+        run: () => router.push("/get-live/workers"),
+      },
+      {
         id: "focus",
         label: mode === "focus" ? "End focus" : "Start focus",
         run: () => (mode === "focus" ? endFocus() : startFocus()),

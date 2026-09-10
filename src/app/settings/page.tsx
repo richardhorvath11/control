@@ -113,6 +113,9 @@ export default function SettingsPage() {
             <Link href="/get-live" className="btn-ghost text-[12px]">
               Open Get Live wizard
             </Link>
+            <Link href="/get-live/workers" className="btn-ghost text-[12px]">
+              Start workers
+            </Link>
           </div>
           {status && (
             <div className="text-[12px] text-running" data-testid="watch-status">

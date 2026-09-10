@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# dogfood-up — V0.9 chip 2 thin wrapper → chip2-launcher.mjs
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec node "$ROOT/scripts/chip2-launcher.mjs" "$@"

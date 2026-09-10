@@ -57,6 +57,23 @@ fi
 
 OUTBOX_URL="${CONTROL_BASE_URL%/}/api/github/outbox"
 
+STATUS_URL="${CONTROL_BASE_URL%/}/api/watchers/status"
+
+report_watcher_status() {
+  local status="$1"
+  local last_action="$2"
+  local detail="${3:-}"
+  local payload
+  if [[ -n "$detail" ]]; then
+    payload="$(python3 -c 'import json,sys; print(json.dumps({"id":"github-outbox","status":sys.argv[1],"last_action":sys.argv[2],"detail":sys.argv[3]}))' "$status" "$last_action" "$detail")"
+  else
+    payload="$(python3 -c 'import json,sys; print(json.dumps({"id":"github-outbox","status":sys.argv[1],"last_action":sys.argv[2]}))' "$status" "$last_action")"
+  fi
+  curl -sS -X PUT "$STATUS_URL" -H 'Content-Type: application/json' -d "$payload" >/dev/null 2>&1 || true
+}
+
+
+
 fail_item() {
   local id="$1"
   local err="$2"
@@ -145,6 +162,7 @@ print(f"{id_}\t{repo}\t{pr}\t{path}")
 }
 
 drain_once() {
+  report_watcher_status "ticking" "draining github outbox"
   # Dry-run: GET pending (no claim) so we do not consume the lease.
   if [[ "$DRY_RUN" == "1" ]]; then
     local list
@@ -188,6 +206,7 @@ for it in items:
     }
     if [[ "$code" == "204" ]]; then
       rm -f "$tmp"
+      report_watcher_status "idle" "no pending github outbox"
       return 0
     fi
     if [[ "$code" != "200" ]]; then
@@ -210,10 +229,13 @@ for it in items:
 
 if [[ "$WATCH" == "1" ]]; then
   echo "watching ${OUTBOX_URL} every ${POLL_SECONDS}s (dry_run=${DRY_RUN})"
+  report_watcher_status "idle" "github-outbox-worker started"
   while true; do
     drain_once || true
     sleep "$POLL_SECONDS"
   done
 else
+  report_watcher_status "ticking" "github-outbox-worker --once"
   drain_once
+  report_watcher_status "idle" "github-outbox-worker --once done"
 fi

@@ -237,6 +237,20 @@ async function api(method, pathname, body) {
   return res;
 }
 
+
+async function reportWatcherStatus(status, last_action, detail) {
+  try {
+    await api("PUT", "/api/watchers/status", {
+      id: "review-worker",
+      status,
+      last_action,
+      ...(detail ? { detail } : {}),
+    });
+  } catch {
+    /* board is best-effort */
+  }
+}
+
 async function claimJob() {
   const res = await api("POST", "/api/review/jobs/claim", {
     worker_id: WORKER_ID,
@@ -386,7 +400,10 @@ async function processOne() {
     console.error("claim failed:", e instanceof Error ? e.message : e);
     return { exitCode: 2 };
   }
-  if (!rawJob) return { empty: true };
+  if (!rawJob) {
+    await reportWatcherStatus("idle", "polled — no pending jobs");
+    return { empty: true };
+  }
 
   const v = validateJob(rawJob);
   if (!v.ok) {
@@ -410,6 +427,12 @@ async function processOne() {
     job.kind === "slack_draft"
       ? `claimed ${job.job_id} · slack_draft ${job.channel_id} ${job.message_ts}`
       : `claimed ${job.job_id} · ${normalizeRepo(job.repo)}#${job.pr}`
+  );
+  await reportWatcherStatus(
+    "ticking",
+    job.kind === "slack_draft"
+      ? `claimed slack_draft ${job.job_id}`
+      : `claimed ${normalizeRepo(job.repo)}#${job.pr}`
   );
 
   const stopBeat = heartbeatLoop(job.job_id);
@@ -497,6 +520,7 @@ async function main() {
   console.log(
     "Auth: claude login or CLAUDE_CODE_OAUTH_TOKEN — ANTHROPIC_API_KEY is unset for runs."
   );
+  await reportWatcherStatus("idle", "worker started — watching for jobs");
 
   for (;;) {
     const r = await processOne();

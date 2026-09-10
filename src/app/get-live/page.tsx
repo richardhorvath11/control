@@ -62,7 +62,7 @@ export default function GetLivePage() {
       );
       // One step: persist watch + Switch to Live (wipes seed Needs-you).
       setSeedLiveMode("live");
-      router.replace("/now");
+      router.replace("/get-live/workers");
     } catch {
       setError("Save failed — watch not persisted");
       setSaving(false);
@@ -150,9 +150,9 @@ export default function GetLivePage() {
             <code className="text-text">claude</code> login / Pro).
           </p>
           <p>
-            After Live:{" "}
-            <span className="text-text">Next: start workers</span> (chip 2) —
-            optional; this wizard does not require dogfood-up.
+            After Continue:{" "}
+            <span className="text-text">start workers</span> checklist is next.
+            Slack MCP stays out-of-band.
           </p>
           <p>
             Prefer the seeded Monday walkthrough? Use{" "}
