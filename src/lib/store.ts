@@ -322,10 +322,24 @@ export const useControlStore = create<ControlState>()(
         reviewWorkerEpoch += 1;
         autoKickInFlight.clear();
         if (prev !== "live") {
+          // Demo→Live / first Live: wipe seed Monday Needs-you (Priya etc.) so
+          // empty Live Now is dogfood-correct. Keep only durable external items
+          // if any somehow present; seed rows have no github|slack|external origin.
+          const keptAttention = get().attention.filter(
+            (a) =>
+              a.origin === "github" ||
+              a.origin === "slack" ||
+              a.origin === "external"
+          );
           set({
             seedLiveMode: "live",
             ...emptyLiveReviewWorkerSlice(),
+            attention: keptAttention,
+            fyi: [],
+            suggestedDelegations: [],
+            usedDelegationIds: [],
           });
+          get().recomputeMode();
         } else {
           set({ seedLiveMode: "live" });
         }

@@ -41,6 +41,11 @@ export function CommandPalette() {
         run: () => router.push("/settings"),
       },
       {
+        id: "get-live",
+        label: "Open Get Live wizard",
+        run: () => router.push("/get-live"),
+      },
+      {
         id: "focus",
         label: mode === "focus" ? "End focus" : "Start focus",
         run: () => (mode === "focus" ? endFocus() : startFocus()),
