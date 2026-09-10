@@ -1,17 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { invokeReviewRunner } from "@/lib/invoke-review-runner";
+import { findActiveVerifyJob } from "@/lib/review-jobs";
 import {
+  CLAUDE_VERIFY_HINTS,
   NO_REVIEW_BACKEND_DETAIL,
   WAITING_FOR_LOCAL_WORKER_DETAIL,
   resolveReviewBackend,
 } from "@/lib/review-runner";
+import { listWatcherStatusRows } from "@/lib/watcher-status";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 type Body = {
   job_id?: string;
-  kind?: "pr_review" | "slack_draft";
+  kind?: "pr_review" | "slack_draft" | "verify";
+  /** Alias for kind: verify — tiny Claude smoke, no Review / Needs-you. */
+  smoke?: boolean;
   repo?: string;
   pr?: number | string;
   head_sha?: string;
@@ -26,10 +31,24 @@ type Body = {
   text_excerpt?: string;
 };
 
+function reviewWorkerAlive(
+  rows: Awaited<ReturnType<typeof listWatcherStatusRows>>
+): boolean {
+  const row = rows.find((r) => r.id === "review-worker");
+  if (!row || !row.updated_at) return false;
+  if (row.stale) return false;
+  const status = row.display_status || row.status;
+  if (status === "error" || status === "stale") return false;
+  return status === "idle" || status === "ticking" || status === "waiting";
+}
+
 /**
- * POST /api/review/run — Live review path (pr_review or slack_draft).
+ * POST /api/review/run — Live review path (pr_review | slack_draft | verify).
  * Default backend=worker: enqueue control.review_job.v1 only (no server-spawn claude);
  * worker claims via POST /api/review/jobs/claim; client polls GET /api/review/jobs/:id.
+ *
+ * kind=verify / smoke:true — V0.9 chip 3 Claude smoke. Does NOT create Needs-you
+ * or PR Review items; ephemeral / Agents only. Idempotent while pending|claimed.
  */
 export async function POST(req: NextRequest) {
   let body: Body;
@@ -40,15 +59,17 @@ export async function POST(req: NextRequest) {
   }
 
   const kind =
-    body.kind === "slack_draft"
-      ? "slack_draft"
-      : body.kind === "pr_review"
-        ? "pr_review"
-        : typeof body.channel_id === "string" &&
-            body.channel_id.trim() &&
-            !(typeof body.repo === "string" && body.repo.trim())
-          ? "slack_draft"
-          : "pr_review";
+    body.kind === "verify" || body.smoke === true
+      ? "verify"
+      : body.kind === "slack_draft"
+        ? "slack_draft"
+        : body.kind === "pr_review"
+          ? "pr_review"
+          : typeof body.channel_id === "string" &&
+              body.channel_id.trim() &&
+              !(typeof body.repo === "string" && body.repo.trim())
+            ? "slack_draft"
+            : "pr_review";
 
   if (!resolveReviewBackend()) {
     return NextResponse.json(
@@ -60,6 +81,39 @@ export async function POST(req: NextRequest) {
       },
       { status: 503 }
     );
+  }
+
+  if (kind === "verify") {
+    const rows = await listWatcherStatusRows();
+    if (!reviewWorkerAlive(rows)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "WORKER_DOWN",
+          error: CLAUDE_VERIFY_HINTS.worker_down,
+          hint: CLAUDE_VERIFY_HINTS.worker_down,
+        },
+        { status: 503 }
+      );
+    }
+
+    const existing = await findActiveVerifyJob();
+    if (existing) {
+      return NextResponse.json({
+        ok: true,
+        pending: true,
+        backend: "worker",
+        job: existing,
+        detail: WAITING_FOR_LOCAL_WORKER_DETAIL,
+        idempotent: true,
+      });
+    }
+
+    const outcome = await invokeReviewRunner({
+      job_id: body.job_id,
+      kind: "verify",
+    });
+    return respondOutcome(outcome);
   }
 
   if (kind === "slack_draft") {
@@ -181,7 +235,8 @@ export async function GET() {
       prefer: "worker",
       auth: "claude login or CLAUDE_CODE_OAUTH_TOKEN from claude setup-token — no ANTHROPIC_API_KEY required",
       cli: "./scripts/control-review-worker --once|--watch",
-      kinds: ["pr_review", "slack_draft"],
+      kinds: ["pr_review", "slack_draft", "verify"],
+      verify: "POST { kind:\"verify\" } or { smoke:true } — no Needs-you / no fake Review",
     },
   });
 }

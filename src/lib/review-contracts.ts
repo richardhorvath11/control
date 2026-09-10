@@ -18,7 +18,7 @@ export type ReviewBackend =
   | "fake"
   | "command";
 
-export type ReviewJobKind = "pr_review" | "slack_draft";
+export type ReviewJobKind = "pr_review" | "slack_draft" | "verify";
 
 export type ControlReviewJobV1 = {
   schema: typeof REVIEW_JOB_SCHEMA;
@@ -88,6 +88,7 @@ export function newReviewJobId(): string {
 }
 
 export function resolveReviewJobKind(raw: Record<string, unknown>): ReviewJobKind {
+  if (raw.kind === "verify" || raw.smoke === true) return "verify";
   if (raw.kind === "slack_draft") return "slack_draft";
   if (raw.kind === "pr_review") return "pr_review";
   // Infer: repo+pr → pr_review; channel_id → slack_draft
@@ -124,6 +125,15 @@ export function validateReviewJob(raw: unknown): {
   }
 
   const kind = resolveReviewJobKind(o);
+
+  if (kind === "verify") {
+    const job: ControlReviewJobV1 = {
+      schema: REVIEW_JOB_SCHEMA,
+      job_id: o.job_id.trim(),
+      kind: "verify",
+    };
+    return { ok: true, job };
+  }
 
   if (kind === "slack_draft") {
     if (typeof o.channel_id !== "string" || !o.channel_id.trim()) {
@@ -486,6 +496,22 @@ export function buildCursorCloudStubResult(
     },
   };
 }
+
+/** V0.9 chip 3 — Verify Claude UI / API hints (no API keys). */
+export const CLAUDE_VERIFY_HINTS = {
+  ok: "claude on PATH · worker claimed smoke",
+  missing:
+    "claude CLI missing — install Claude Code, then run `claude` or `claude setup-token`",
+  not_logged_in:
+    "Claude not logged in — run `claude` login or `claude setup-token`",
+  worker_down:
+    "review-worker not running — start with `./scripts/dogfood-up`",
+  timeout:
+    "Verify timed out — ensure `./scripts/dogfood-up` is running and Claude CLI is logged in",
+} as const;
+
+/** Client poll budget for Verify Claude smoke (ms). */
+export const CLAUDE_VERIFY_WAIT_MS = 90_000;
 
 export const NO_REVIEW_BACKEND_DETAIL =
   "No review backend — set CONTROL_REVIEW_BACKEND (worker | claude-cli | cursor-cloud | fake | command).";

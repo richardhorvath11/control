@@ -21,7 +21,7 @@ import {
 
 export type InvokeReviewRunnerInput = {
   job_id?: string;
-  kind?: "pr_review" | "slack_draft";
+  kind?: "pr_review" | "slack_draft" | "verify";
   repo?: string;
   pr?: number;
   head_sha?: string;
@@ -74,13 +74,23 @@ export type InvokeReviewRunnerOutcome =
 
 function buildJob(input: InvokeReviewRunnerInput): ControlReviewJobV1 | null {
   const kind =
-    input.kind === "slack_draft"
-      ? "slack_draft"
-      : input.kind === "pr_review"
-        ? "pr_review"
-        : input.channel_id?.trim() && !input.repo?.trim()
-          ? "slack_draft"
-          : "pr_review";
+    input.kind === "verify"
+      ? "verify"
+      : input.kind === "slack_draft"
+        ? "slack_draft"
+        : input.kind === "pr_review"
+          ? "pr_review"
+          : input.channel_id?.trim() && !input.repo?.trim()
+            ? "slack_draft"
+            : "pr_review";
+
+  if (kind === "verify") {
+    return {
+      schema: REVIEW_JOB_SCHEMA,
+      job_id: input.job_id?.trim() || newReviewJobId(),
+      kind: "verify",
+    };
+  }
 
   if (kind === "slack_draft") {
     const channel_id = (input.channel_id ?? "").trim();
@@ -130,7 +140,7 @@ function buildJob(input: InvokeReviewRunnerInput): ControlReviewJobV1 | null {
 async function withPreferredSnapshot(
   job: ControlReviewJobV1
 ): Promise<ControlReviewJobV1> {
-  if (job.kind === "slack_draft") return job;
+  if (job.kind === "slack_draft" || job.kind === "verify") return job;
   if (job.snapshot_path?.trim()) return job;
   if (!job.repo || !job.pr) return job;
   const preferred = await preferSnapshotPath(job.repo, job.pr);
@@ -153,7 +163,7 @@ export async function enqueueReviewJob(
 > {
   const built = buildJob(input);
   if (!built) {
-    return { ok: false, code: "BAD_JOB", error: "invalid review job (repo+pr or slack_draft fields required)" };
+    return { ok: false, code: "BAD_JOB", error: "invalid review job (verify, repo+pr, or slack_draft fields required)" };
   }
   const job = await withPreferredSnapshot(built);
   const jobPath = await writeReviewJob(job);
@@ -197,7 +207,7 @@ export async function invokeReviewRunner(
 
   const built = buildJob(input);
   if (!built) {
-    return { ok: false, code: "BAD_JOB", error: "invalid review job (repo+pr or slack_draft fields required)" };
+    return { ok: false, code: "BAD_JOB", error: "invalid review job (verify, repo+pr, or slack_draft fields required)" };
   }
   const job = await withPreferredSnapshot(built);
 

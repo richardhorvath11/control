@@ -20,6 +20,8 @@ export {
   WAITING_FOR_LOCAL_WORKER_DETAIL,
   WORKER_TIMEOUT_DETAIL,
   DEFAULT_WORKER_WAIT_MS,
+  CLAUDE_VERIFY_HINTS,
+  CLAUDE_VERIFY_WAIT_MS,
   isReviewBackend,
   resolveReviewBackend,
   newReviewJobId,

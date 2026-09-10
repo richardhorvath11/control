@@ -374,3 +374,18 @@ export async function failReviewJob(
   await unlinkQuiet(reviewJobClaimStatePath(jobId));
   return { ok: true, error: message };
 }
+
+/**
+ * V0.9 chip 3 — idempotent Verify Claude: reuse pending/claimed verify job.
+ * Smoke must not stack on re-click.
+ */
+export async function findActiveVerifyJob(): Promise<ControlReviewJobV1 | null> {
+  const entries = await listJobEntries();
+  for (const entry of entries) {
+    const job = await readReviewJob(entry.jobId);
+    if (!job || job.kind !== "verify") continue;
+    const status = await getReviewJobStatus(entry.jobId);
+    if (status === "pending" || status === "claimed") return job;
+  }
+  return null;
+}

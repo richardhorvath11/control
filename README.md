@@ -1,4 +1,4 @@
-# Control — V0.9 (chip 2: dogfood-up + worker checklist)
+# Control — V0.9 (chip 3: Claude verify)
 
 Dark, desktop-width web prototype of an engineering work control plane. Seeded Monday morning so a tech lead can understand the day, resume a workstream, and make one judgment in under three minutes.
 
@@ -6,13 +6,39 @@ Dark, desktop-width web prototype of an engineering work control plane. Seeded M
 
 ## Dogfood path (V0.9)
 
-**Get Live → `./scripts/dogfood-up` → MCP Slack (out-of-band).**
+**Get Live → `./scripts/dogfood-up` → Verify Claude → MCP Slack (out-of-band).**
 
 1. **Get Live** (`/get-live`) — point at repo + Slack surfaces; Continue → Live (no tokens).
 2. **Workers checklist** (`/get-live/workers`) — copy `./scripts/dogfood-up`; local rows `review-worker` · `github-outbox` · `github-watch` green via `GET /api/watchers/status`. Slack rows informational (never block Now).
-3. **MCP Slack** — copy-paste from `scripts/slack-watch.md`; no Slack token in Control.
+3. **Verify Claude** (chip 3, same page) — **Verify Claude** checks Claude CLI + Pro can serve the Gastown review worker. Pass = green. Fail = clear next step (`claude` / `setup-token` / `dogfood-up`) — never invents Review findings or uses fake.
+4. **MCP Slack** — copy-paste from `scripts/slack-watch.md`; no Slack token in Control.
 
 `./scripts/dogfood-up` preflights Control, starts `control-review-worker --watch` + `github-outbox-worker --watch`, light-loops `github-watcher-tick.sh`, prints Slack MCP copy. Ctrl-C or `--stop` cleans children. `--check` curls only. No `CONTROL_REVIEW_BACKEND=fake`; no Anthropic API key prompts. Cap `NEEDS_YOU_EXTERNAL_CAP=5` unchanged.
+
+### Verify Claude (V0.9 chip 3)
+
+On **Get Live → Workers** (`/get-live/workers`), near the checklist:
+
+| | |
+|--|--|
+| UI | Claude CLI (Pro) · **[ Verify Claude ]** · status `idle` / `checking` / `ok` / `failed` |
+| Pass | `claude on PATH · worker claimed smoke` |
+| Fail hints | missing → install + `claude` / `setup-token` · not logged in → `claude` login / `setup-token` · worker down / timeout → `./scripts/dogfood-up` |
+| No API keys | Never collects or requires `ANTHROPIC_API_KEY` |
+
+Smoke path (fail closed; no fake Review / Needs-you):
+
+1. Optional `GET /api/review/claude-status` → `{ ok, claude_on_path?, hint }` (which claude only).
+2. `POST /api/review/run` with `{ kind: "verify" }` or `{ smoke: true }` — enqueues a tiny job; **does not** create Needs-you or a PR Review item (ephemeral / Agents only). Idempotent while pending|claimed (re-click does not stack).
+3. Requires fresh `review-worker` heartbeat — else fail with dogfood-up hint.
+4. Worker claims; `kind: verify` → cheap `claude -p` proving Pro session → `{ status:"ok", summary:"claude ok", findings:[] }`.
+5. UI polls `GET /api/review/jobs/:id` ≤90s. Timeout/fail → red; never invent findings.
+
+```bash
+curl -sS http://localhost:3000/api/review/claude-status
+curl -sS -X POST http://localhost:3000/api/review/run   -H 'Content-Type: application/json' -d '{"kind":"verify"}'
+# then poll GET /api/review/jobs/$JOB_ID
+```
 
 ## Run
 
@@ -31,7 +57,7 @@ Open [http://localhost:3000](http://localhost:3000). **Dogfood = Live + your wat
 - **Load Monday demo** → Demo + Monday seed; **does not** wipe `.control/watch.json`.
 - Preference exists **or** watch configured → existing AppShell (auto-Live if configured + no pref).
 - After Live once, wizard does not trap you; reopen via Setup → **Open Get Live wizard** or ⌘K.
-- Copy: reviews use **Claude CLI + Pro** (Gastown) — no Console API keys / no Slack·GitHub·Anthropic tokens in the wizard. Continue → **Workers** checklist (`/get-live/workers`) for `./scripts/dogfood-up` (chip 2). Claude verify = chip 3 (not this chip).
+- Copy: reviews use **Claude CLI + Pro** (Gastown) — no Console API keys / no Slack·GitHub·Anthropic tokens in the wizard. Continue → **Workers** checklist (`/get-live/workers`) for `./scripts/dogfood-up` (chip 2). Claude verify = chip 3 (Verify Claude on `/get-live/workers`).
 
 When `.control/watch.json` has a non-empty `repo` and ≥1 Slack surface (or include DMs/MPIMs) and you have no saved mode preference, UI defaults to **Live**. Monday seed is only via **Load demo** (sidebar / ⌘K / Get Live secondary) — that switches to Demo without wiping the watch channel list on disk. Configure under **Setup** (`/settings`), **Get Live** (`/get-live`), or edit `watch.json`.
 

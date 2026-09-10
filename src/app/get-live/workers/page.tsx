@@ -1,11 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import {
+  CLAUDE_VERIFY_HINTS,
+  CLAUDE_VERIFY_WAIT_MS,
+} from "@/lib/review-contracts";
 
 /**
  * V0.9 chip 2 — post-Get Live worker checklist.
+ * V0.9 chip 3 — Verify Claude (additive; checklist independent).
  * Polls GET /api/watchers/status every 3-5s.
  * Local required: review-worker, github-outbox, github-watch.
  * Slack rows informational — never block Continue to /now.
@@ -21,9 +26,12 @@ type WatcherRow = {
   stale?: boolean;
 };
 
+type VerifyStatus = "idle" | "checking" | "ok" | "failed";
+
 const LOCAL_REQUIRED = ["review-worker", "github-outbox", "github-watch"] as const;
 const SLACK_INFO = ["slack-watch", "slack-outbox"] as const;
 const LAUNCH_CMD = "./scripts/dogfood-up";
+const VERIFY_POLL_MS = 2000;
 
 function isGreen(row: WatcherRow | undefined): boolean {
   if (!row || !row.updated_at) return false;
@@ -33,11 +41,33 @@ function isGreen(row: WatcherRow | undefined): boolean {
   return status === "idle" || status === "ticking" || status === "waiting";
 }
 
+function mapVerifyFailHint(raw: string): string {
+  const t = (raw || "").toLowerCase();
+  if (/not found on path|claude cli missing|claude_on_path|missing/.test(t)) {
+    return CLAUDE_VERIFY_HINTS.missing;
+  }
+  if (/not logged|setup-token|login|oauth|unauthorized|auth/.test(t)) {
+    return CLAUDE_VERIFY_HINTS.not_logged_in;
+  }
+  if (/worker_down|dogfood-up|not running|waiting timed out|control-review-worker/.test(t)) {
+    return /timed out|waiting timed/.test(t)
+      ? CLAUDE_VERIFY_HINTS.timeout
+      : CLAUDE_VERIFY_HINTS.worker_down;
+  }
+  if (/timed out|timeout/.test(t)) return CLAUDE_VERIFY_HINTS.timeout;
+  return raw.trim() || CLAUDE_VERIFY_HINTS.timeout;
+}
+
 export default function GetLiveWorkersPage() {
   const router = useRouter();
   const [watchers, setWatchers] = useState<WatcherRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  const [verifyStatus, setVerifyStatus] = useState<VerifyStatus>("idle");
+  const [verifyHint, setVerifyHint] = useState<string | null>(null);
+  const verifyInFlight = useRef(false);
+  const verifyAbort = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -77,6 +107,163 @@ export default function GetLiveWorkersPage() {
       setCopied(false);
     }
   };
+
+  const runVerifyClaude = async () => {
+    // Safe double-click: ignore while checking.
+    if (verifyInFlight.current || verifyStatus === "checking") return;
+    verifyInFlight.current = true;
+    const gen = ++verifyAbort.current;
+    setVerifyStatus("checking");
+    setVerifyHint(null);
+
+    const still = () => gen === verifyAbort.current;
+
+    try {
+      // 1) Optional which-claude probe
+      try {
+        const st = await fetch("/api/review/claude-status");
+        const sdata = (await st.json().catch(() => ({}))) as {
+          ok?: boolean;
+          claude_on_path?: boolean;
+          hint?: string;
+        };
+        if (!still()) return;
+        if (st.ok && sdata.claude_on_path === false) {
+          setVerifyStatus("failed");
+          setVerifyHint(sdata.hint || CLAUDE_VERIFY_HINTS.missing);
+          return;
+        }
+      } catch {
+        // Probe optional — continue to worker path.
+      }
+
+      // 2) Require review-worker heartbeat (fresh checklist row)
+      const rw = byId.get("review-worker");
+      if (!isGreen(rw)) {
+        // Refresh once in case poll is stale
+        await load();
+        if (!still()) return;
+        const res2 = await fetch("/api/watchers/status");
+        const data2 = (await res2.json().catch(() => ({}))) as {
+          watchers?: WatcherRow[];
+        };
+        const row = (data2.watchers || []).find((w) => w.id === "review-worker");
+        if (!isGreen(row)) {
+          setVerifyStatus("failed");
+          setVerifyHint(CLAUDE_VERIFY_HINTS.worker_down);
+          return;
+        }
+      }
+
+      // 3) Enqueue verify smoke (idempotent server-side)
+      const res = await fetch("/api/review/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "verify", smoke: true }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        pending?: boolean;
+        code?: string;
+        error?: string;
+        hint?: string;
+        job?: { job_id?: string } | null;
+        job_id?: string;
+      };
+      if (!still()) return;
+
+      if (!res.ok || data.ok === false) {
+        setVerifyStatus("failed");
+        setVerifyHint(
+          mapVerifyFailHint(data.hint || data.error || CLAUDE_VERIFY_HINTS.worker_down)
+        );
+        return;
+      }
+
+      const jobId =
+        (typeof data.job?.job_id === "string" && data.job.job_id.trim()) ||
+        (typeof data.job_id === "string" && data.job_id.trim()) ||
+        "";
+      if (!jobId) {
+        setVerifyStatus("failed");
+        setVerifyHint(CLAUDE_VERIFY_HINTS.timeout);
+        return;
+      }
+
+      // 4) Poll ≤90s — fail closed; never invent Review findings
+      const started = Date.now();
+      while (Date.now() - started < CLAUDE_VERIFY_WAIT_MS) {
+        if (!still()) return;
+        await new Promise((r) => window.setTimeout(r, VERIFY_POLL_MS));
+        if (!still()) return;
+        try {
+          const poll = await fetch(
+            `/api/review/jobs/${encodeURIComponent(jobId)}`
+          );
+          const pdata = (await poll.json().catch(() => ({}))) as {
+            ok?: boolean;
+            status?: string;
+            error?: string | null;
+            result?: {
+              status?: string;
+              summary?: string;
+              findings?: unknown[];
+            } | null;
+          };
+          if (pdata.status === "done" && pdata.result) {
+            const findings = Array.isArray(pdata.result.findings)
+              ? pdata.result.findings
+              : [];
+            const okShape =
+              pdata.result.status === "ok" &&
+              /claude ok/i.test(pdata.result.summary || "") &&
+              findings.length === 0;
+            if (okShape) {
+              setVerifyStatus("ok");
+              setVerifyHint(CLAUDE_VERIFY_HINTS.ok);
+            } else if (pdata.result.status === "error") {
+              setVerifyStatus("failed");
+              setVerifyHint(mapVerifyFailHint(pdata.result.summary || ""));
+            } else {
+              // Unexpected shape — fail closed (no fake Review)
+              setVerifyStatus("failed");
+              setVerifyHint(
+                mapVerifyFailHint(pdata.result.summary || "unexpected verify result")
+              );
+            }
+            return;
+          }
+          if (pdata.status === "failed") {
+            setVerifyStatus("failed");
+            setVerifyHint(mapVerifyFailHint(pdata.error || ""));
+            return;
+          }
+        } catch {
+          // transient poll errors — keep waiting
+        }
+      }
+      if (!still()) return;
+      setVerifyStatus("failed");
+      setVerifyHint(CLAUDE_VERIFY_HINTS.timeout);
+    } catch (err) {
+      if (!still()) return;
+      setVerifyStatus("failed");
+      setVerifyHint(
+        mapVerifyFailHint(err instanceof Error ? err.message : "verify failed")
+      );
+    } finally {
+      verifyInFlight.current = false;
+    }
+  };
+
+  const verifyChipClass =
+    verifyStatus === "ok"
+      ? "text-running"
+      : verifyStatus === "failed"
+        ? "text-blocked"
+        : verifyStatus === "checking"
+          ? "text-review"
+          : "text-muted";
 
   return (
     <div
@@ -213,6 +400,69 @@ export default function GetLiveWorkersPage() {
                 </div>
               );
             })}
+          </div>
+        </div>
+
+        {/* V0.9 chip 3 — Verify Claude (additive; no API key fields) */}
+        <div
+          className="panel p-5 space-y-3"
+          data-testid="verify-claude"
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="text-[14px] font-semibold leading-5">
+                Claude CLI (Pro)
+              </div>
+              <p className="text-[12px] text-muted mt-0.5 leading-5">
+                Checks Claude CLI + Pro can serve the Gastown review worker.
+                Pass = green. Fail = next step — never invents Review findings.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="btn-secondary text-[12px] shrink-0"
+              onClick={() => void runVerifyClaude()}
+              disabled={verifyStatus === "checking"}
+              data-testid="verify-claude-btn"
+              aria-busy={verifyStatus === "checking"}
+            >
+              {verifyStatus === "checking" ? "Checking…" : "Verify Claude"}
+            </button>
+          </div>
+          <div
+            className="flex items-start gap-2"
+            data-verify-status={verifyStatus}
+          >
+            <span className={`${verifyChipClass} text-[14px] leading-5`} aria-hidden>
+              {verifyStatus === "ok"
+                ? "●"
+                : verifyStatus === "failed"
+                  ? "●"
+                  : verifyStatus === "checking"
+                    ? "◉"
+                    : "○"}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className={`text-[12px] font-mono ${verifyChipClass}`}>
+                status: {verifyStatus}
+              </div>
+              {verifyHint && (
+                <div
+                  className={`text-[12px] mt-1 leading-5 ${
+                    verifyStatus === "failed" ? "text-blocked" : "text-muted"
+                  }`}
+                  data-testid="verify-claude-hint"
+                >
+                  {verifyHint}
+                </div>
+              )}
+              {verifyStatus === "idle" && (
+                <div className="text-[11px] text-muted mt-1">
+                  Requires <code className="text-text">./scripts/dogfood-up</code>{" "}
+                  (review-worker heartbeat) · no ANTHROPIC_API_KEY
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

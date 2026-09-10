@@ -80,6 +80,7 @@ function normalizeRepo(repo) {
 }
 
 function resolveKind(raw) {
+  if (raw.kind === "verify" || raw.smoke === true) return "verify";
   if (raw.kind === "slack_draft") return "slack_draft";
   if (raw.kind === "pr_review") return "pr_review";
   if (typeof raw.channel_id === "string" && raw.channel_id.trim()) {
@@ -104,6 +105,16 @@ function validateJob(raw) {
     return { ok: false, error: "job_id required" };
   }
   const kind = resolveKind(raw);
+  if (kind === "verify") {
+    return {
+      ok: true,
+      job: {
+        schema: REVIEW_JOB_SCHEMA,
+        job_id: raw.job_id.trim(),
+        kind: "verify",
+      },
+    };
+  }
   if (kind === "slack_draft") {
     if (typeof raw.channel_id !== "string" || !raw.channel_id.trim()) {
       return { ok: false, error: "channel_id required for slack_draft" };
@@ -297,6 +308,14 @@ function heartbeatLoop(jobId) {
 }
 
 function buildGluePrompt(job) {
+  if (job.kind === "verify") {
+    return [
+      "You are proving Claude CLI + Pro can serve Control's Gastown review worker.",
+      "Reply with ONLY one JSON object and nothing else:",
+      `{"schema":"control.review_result.v1","job_id":"${job.job_id}","status":"ok","summary":"claude ok","findings":[]}`,
+      "Do not invent review findings. findings must be [].",
+    ].join("\n");
+  }
   if (job.kind === "slack_draft") {
     return [
       "You are a thin Slack draft-reply glue for Control (not a product skill/plugin).",
@@ -392,6 +411,118 @@ async function runClaude(job) {
   return attempt;
 }
 
+/**
+ * V0.9 chip 3 — cheap verify smoke.
+ * Prefer a tiny claude -p that proves Pro session; never invent Review findings.
+ */
+function looksLikeAuthFail(stdout, stderr, status) {
+  const blob = `${stdout || ""}\n${stderr || ""}`.toLowerCase();
+  if (/not logged|please log|login required|unauthorized|auth(entication)? (failed|required)|setup-token|no.*oauth|expired.*token/.test(blob)) {
+    return true;
+  }
+  // Non-zero without parseable output often means auth/session issues on Pro CLI.
+  if (status && status !== 0 && !/\{/.test(stdout || "")) return true;
+  return false;
+}
+
+async function runVerifyClaude(job) {
+  const claudeBin = process.env.CONTROL_REVIEW_WORKER_CLAUDE || "claude";
+  if (!claudeAvailable(claudeBin)) {
+    return { missing: true };
+  }
+
+  // Cheap prompt: prove session; worker constructs the canonical result.
+  const glue =
+    'Reply with exactly this single line and nothing else:\nclaude ok';
+  const env = { ...process.env };
+  delete env.ANTHROPIC_API_KEY;
+
+  const attempt = await new Promise((resolve) => {
+    const useEnvU = process.platform !== "win32";
+    const cmd = useEnvU ? "env" : claudeBin;
+    const spawnArgs = useEnvU
+      ? ["-u", "ANTHROPIC_API_KEY", claudeBin, "-p", glue]
+      : ["-p", glue];
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(cmd, spawnArgs, { env, cwd: ROOT });
+    const killer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+    }, 90_000);
+    child.stdout?.on("data", (d) => {
+      stdout += d.toString();
+      if (stdout.length > 1024 * 1024) stdout = stdout.slice(-1024 * 1024);
+    });
+    child.stderr?.on("data", (d) => {
+      stderr += d.toString();
+    });
+    child.on("error", (e) => {
+      clearTimeout(killer);
+      if (e && e.code === "ENOENT") resolve({ missing: true });
+      else resolve({ ok: false, error: e.message, stdout, stderr, auth: false });
+    });
+    child.on("close", (status) => {
+      clearTimeout(killer);
+      const text = `${stdout}\n${stderr}`;
+      if (/claude ok/i.test(text)) {
+        resolve({
+          ok: true,
+          result: {
+            schema: REVIEW_RESULT_SCHEMA,
+            job_id: job.job_id,
+            status: "ok",
+            summary: "claude ok",
+            findings: [],
+          },
+        });
+        return;
+      }
+      // Fall back: full glue JSON path once if cheap path did not match.
+      resolve({
+        ok: false,
+        soft: true,
+        stdout,
+        stderr,
+        status,
+        auth: looksLikeAuthFail(stdout, stderr, status),
+      });
+    });
+  });
+
+  if (attempt.missing || attempt.ok) return attempt;
+
+  // Retry with structured glue (same as other kinds) once.
+  const structured = await runClaudeOnce(job);
+  if (structured.missing) return structured;
+  if (structured.ok) {
+    // Force minimal verify shape — never invent findings.
+    structured.result = {
+      schema: REVIEW_RESULT_SCHEMA,
+      job_id: job.job_id,
+      status: "ok",
+      summary: "claude ok",
+      findings: [],
+    };
+    return structured;
+  }
+
+  if (attempt.auth || looksLikeAuthFail(structured.stdout, structured.stderr, structured.status)) {
+    return {
+      ok: false,
+      auth: true,
+      error: "Claude not logged in — run claude login or claude setup-token",
+    };
+  }
+  return {
+    ok: false,
+    error: structured.error || attempt.error || "could not parse claude output",
+  };
+}
+
 async function processOne() {
   let rawJob;
   try {
@@ -424,21 +555,25 @@ async function processOne() {
   }
   const job = v.job;
   console.log(
-    job.kind === "slack_draft"
-      ? `claimed ${job.job_id} · slack_draft ${job.channel_id} ${job.message_ts}`
-      : `claimed ${job.job_id} · ${normalizeRepo(job.repo)}#${job.pr}`
+    job.kind === "verify"
+      ? `claimed ${job.job_id} · verify (claude smoke)`
+      : job.kind === "slack_draft"
+        ? `claimed ${job.job_id} · slack_draft ${job.channel_id} ${job.message_ts}`
+        : `claimed ${job.job_id} · ${normalizeRepo(job.repo)}#${job.pr}`
   );
   await reportWatcherStatus(
     "ticking",
-    job.kind === "slack_draft"
-      ? `claimed slack_draft ${job.job_id}`
-      : `claimed ${normalizeRepo(job.repo)}#${job.pr}`
+    job.kind === "verify"
+      ? `claimed verify ${job.job_id}`
+      : job.kind === "slack_draft"
+        ? `claimed slack_draft ${job.job_id}`
+        : `claimed ${normalizeRepo(job.repo)}#${job.pr}`
   );
 
   const stopBeat = heartbeatLoop(job.job_id);
   let run;
   try {
-    run = await runClaude(job);
+    run = job.kind === "verify" ? await runVerifyClaude(job) : await runClaude(job);
   } finally {
     stopBeat();
   }
@@ -454,17 +589,28 @@ async function processOne() {
     return { exitCode: 4 };
   }
   if (!run.ok) {
+    const failMsg = run.auth
+      ? "Agent Failed — Claude not logged in (claude login / setup-token)"
+      : `Agent Failed — could not parse claude output (${run.error || "invalid JSON"})`;
     try {
-      await postFail(
-        job.job_id,
-        `Agent Failed — could not parse claude output (${run.error || "invalid JSON"})`
-      );
+      await postFail(job.job_id, failMsg);
     } catch (e) {
       console.error("fail POST failed:", e instanceof Error ? e.message : e);
       return { exitCode: 2 };
     }
-    console.error("parse fail");
+    console.error(run.auth ? "auth fail" : "parse fail");
     return { exitCode: 3 };
+  }
+
+  // verify: force minimal result — never invent findings / Review pollution
+  if (job.kind === "verify") {
+    run.result = {
+      schema: REVIEW_RESULT_SCHEMA,
+      job_id: job.job_id,
+      status: "ok",
+      summary: "claude ok",
+      findings: [],
+    };
   }
 
   // slack_draft: require draft_text on ok — never invent a templated reply
