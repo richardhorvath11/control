@@ -376,6 +376,21 @@ export async function failReviewJob(
 }
 
 /**
+ * V0.9 chip 4 — serialize concurrent Verify Claude enqueues in-process
+ * so double-click / parallel POSTs still yield one pending|claimed smoke job.
+ */
+let verifyEnqueueTail: Promise<unknown> = Promise.resolve();
+
+export function withVerifyEnqueueLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = verifyEnqueueTail.then(fn, fn);
+  verifyEnqueueTail = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+/**
  * V0.9 chip 3 — idempotent Verify Claude: reuse pending/claimed verify job.
  * Smoke must not stack on re-click.
  */

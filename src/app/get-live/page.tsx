@@ -13,6 +13,7 @@ import {
 
 /**
  * V0.9 chip 1 — First-run Get Live wizard.
+ * V0.9 chip 4 — Skip escape when configured; Claude CLI + Pro copy; never wipe watch.json.
  * Continue → PUT /api/watch + Switch to Live in one step.
  * Load Monday demo → Demo + seed; does not wipe watch.json.
  * No Slack / GitHub / Anthropic tokens collected.
@@ -29,6 +30,7 @@ export default function GetLivePage() {
     status,
     setStatus,
     load,
+    configured,
   } = useWatchFormLoader();
   const [saving, setSaving] = useState(false);
 
@@ -75,6 +77,12 @@ export default function GetLivePage() {
     router.replace("/now");
   };
 
+  const skipWizard = () => {
+    // Escape hatch (chip 4): leave without touching watch.json.
+    if (!configured) return;
+    router.replace("/now");
+  };
+
   return (
     <div
       className="min-h-screen bg-bg text-text flex items-start justify-center px-6 py-12"
@@ -89,10 +97,9 @@ export default function GetLivePage() {
             Point Control at your repo and Slack
           </h1>
           <p className="text-[13px] text-muted mt-2 leading-5">
-            Live watches your GitHub repo and Slack surfaces. Reviews use{" "}
-            <strong className="text-text">Claude CLI + Pro</strong> (Gastown) —
-            no Console API keys, no tokens in this wizard. Worker launch and
-            Claude verify are next steps after you&apos;re Live.
+            Reviews use <strong className="text-text">Claude CLI + Pro</strong> — no API keys.
+            Point at your repo and Slack, then Continue → Live. Worker launch and
+            Claude verify are next.
           </p>
         </div>
 
@@ -128,7 +135,26 @@ export default function GetLivePage() {
               >
                 Load Monday demo
               </button>
+              <button
+                type="button"
+                className="btn-ghost text-[12px]"
+                onClick={skipWizard}
+                disabled={saving || !configured || loading}
+                title={
+                  configured
+                    ? "Leave wizard without changing watch.json"
+                    : "Configure watch or Load Monday demo to leave"
+                }
+                data-testid="get-live-skip"
+              >
+                Skip → Now
+              </button>
             </div>
+            {!loading && !configured && (
+              <p className="text-[11px] text-muted" data-testid="get-live-skip-hint">
+                Skip is available after watch is configured — or use Load Monday demo.
+              </p>
+            )}
 
             {status && (
               <div className="text-[12px] text-running" data-testid="watch-status">

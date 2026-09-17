@@ -133,6 +133,30 @@ const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
 assert(readme.includes("### Verify Claude"), "README Verify Claude subsection");
 assert(readme.includes("NEEDS_YOU_EXTERNAL_CAP=5"), "cap documented");
 
+
+// V0.9 chip 4 — polish / escape hatches
+const sidebar = fs.readFileSync(path.join(ROOT, "src/components/Sidebar.tsx"), "utf8");
+assert(sidebar.includes('/get-live'), "Sidebar links Get Live");
+assert(sidebar.includes('/get-live/workers'), "Sidebar links Workers");
+assert(sidebar.includes('Get Live'), "Sidebar label Get Live");
+assert(sidebar.includes('Workers'), "Sidebar label Workers");
+
+const getLive = fs.readFileSync(path.join(ROOT, "src/app/get-live/page.tsx"), "utf8");
+assert(getLive.includes('get-live-skip'), "Get Live has Skip control");
+assert(getLive.includes('skipWizard'), "Get Live skipWizard");
+assert(/Claude CLI \+ Pro/.test(getLive), "Get Live Claude CLI + Pro copy");
+assert(/no API keys/i.test(getLive), "Get Live says no API keys");
+assert(getLive.includes('Load Monday demo'), "Load demo secondary still present");
+
+assert(runRoute.includes('withVerifyEnqueueLock'), "verify enqueue lock");
+const jobsLib = fs.readFileSync(path.join(ROOT, "src/lib/review-jobs.ts"), "utf8");
+assert(jobsLib.includes('withVerifyEnqueueLock'), "review-jobs exports enqueue lock");
+
+assert(readme.includes('## Dogfood'), "README Dogfood at top");
+assert(readme.includes('## Reference'), "README Reference section");
+const recipeIdx = readme.indexOf('1. **Get Live**');
+assert(recipeIdx >= 0 && recipeIdx < 800, "dogfood recipe near top of README");
+
 if (failed) {
   console.error(`\n${failed} failure(s)`);
   process.exit(1);

@@ -47,7 +47,7 @@ export function CommandPalette() {
       },
       {
         id: "get-live-workers",
-        label: "Start workers checklist",
+        label: "Open Workers checklist",
         run: () => router.push("/get-live/workers"),
       },
       {

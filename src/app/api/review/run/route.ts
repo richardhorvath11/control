@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { invokeReviewRunner } from "@/lib/invoke-review-runner";
-import { findActiveVerifyJob } from "@/lib/review-jobs";
+import { findActiveVerifyJob, withVerifyEnqueueLock } from "@/lib/review-jobs";
 import {
   CLAUDE_VERIFY_HINTS,
   NO_REVIEW_BACKEND_DETAIL,
@@ -97,23 +97,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const existing = await findActiveVerifyJob();
-    if (existing) {
-      return NextResponse.json({
-        ok: true,
-        pending: true,
-        backend: "worker",
-        job: existing,
-        detail: WAITING_FOR_LOCAL_WORKER_DETAIL,
-        idempotent: true,
-      });
-    }
+    // Chip 4: serialize find-or-enqueue so concurrent Verify share one smoke job.
+    return withVerifyEnqueueLock(async () => {
+      const existing = await findActiveVerifyJob();
+      if (existing) {
+        return NextResponse.json({
+          ok: true,
+          pending: true,
+          backend: "worker",
+          job: existing,
+          detail: WAITING_FOR_LOCAL_WORKER_DETAIL,
+          idempotent: true,
+        });
+      }
 
-    const outcome = await invokeReviewRunner({
-      job_id: body.job_id,
-      kind: "verify",
+      const outcome = await invokeReviewRunner({
+        job_id: body.job_id,
+        kind: "verify",
+      });
+      return respondOutcome(outcome);
     });
-    return respondOutcome(outcome);
   }
 
   if (kind === "slack_draft") {

@@ -10,6 +10,8 @@ import {
   Bot,
   Focus,
   Settings,
+  Radio,
+  ListChecks,
 } from "lucide-react";
 import { useControlStore } from "@/lib/store";
 
@@ -19,6 +21,8 @@ const nav = [
   { href: "/review", label: "Review", icon: ScanSearch, badge: true },
   { href: "/agents", label: "Agents", icon: Bot, running: true },
   { href: "/settings", label: "Setup", icon: Settings },
+  { href: "/get-live", label: "Get Live", icon: Radio },
+  { href: "/get-live/workers", label: "Workers", icon: ListChecks },
 ];
 
 function phaseDot(phase: string) {
