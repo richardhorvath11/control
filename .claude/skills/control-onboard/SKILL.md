@@ -1,37 +1,39 @@
 ---
 name: control-onboard
-description: Onboard a developer onto Control and prove everything works — prereqs (node, gh, claude Pro login), Control dev server, Live watch config, dogfood workers, Verify Claude, and Slack MCP. Use when someone says "set up Control", "is Control working", "onboard me", or runs /control-onboard.
+description: Onboard and health-check Control end to end (prereqs, dev server, Live config, workers, Claude verify, Slack MCP, GitHub watcher). Use when the user runs /control-onboard, is setting up Control, or says Control "isn't working".
 ---
 
-# Control onboarding (/control-onboard)
+# /control-onboard
 
-Goal: get the user from zero to **Live** and prove each piece works. Run the steps **in order**, report **PASS/FAIL per step**, and on any FAIL give the **exact next command**. Safe to rerun.
+Goal: get the user to "you're live" with Control, or to an exact, short list of fixes.
 
-## Rules (non-negotiable)
-- Talk to Control **over HTTP only** at `CONTROL_BASE_URL` (default `http://localhost:3000`). **Never** read or write `.control/` files.
-- **No tokens or secrets.** Never ask for or set `ANTHROPIC_API_KEY`; Claude uses Pro login (`claude`) or `claude setup-token`. No Slack/GitHub tokens in Control.
-- **No fake success.** If a check can't run, it's FAIL (or SKIPPED with reason). Never set `CONTROL_REVIEW_BACKEND=fake`.
-- **Send no Slack messages.** Don't call `slack_send_message` or claim the Slack outbox.
-- Idempotent: the only write is `POST /api/review/run {kind:"verify"}`, which Control dedupes while a verify job is pending/claimed.
+## How to run
 
-## Fast path
-From the repo root run the doctor and relay its output:
+1. From the repo root, run `./scripts/control-doctor` (add `--json` if you want to parse results).
+   `CONTROL_BASE_URL` defaults to `http://localhost:3000`.
+2. Report every step as **PASS / FAIL / WARN / SKIP**, in this order, and for every FAIL give the
+   exact `fix:` command the doctor printed. Do not invent success: a SKIP (blocked) is not a pass.
+3. Offer to run safe fixes yourself (`npm install && npm run dev` in the background, `./scripts/dogfood-up`),
+   then re-run `./scripts/control-doctor` and report again. Ask before anything that needs the user's login.
 
-```bash
-./scripts/control-doctor            # all steps
-./scripts/control-doctor --no-verify   # skip the POST verify job
-./scripts/control-doctor --tick-dry-run   # also run ./scripts/github-watcher-tick.sh --dry-run
-```
-Exit 0 = live, 1 = something to fix. Then walk the user through each FAIL using the steps below, fix one thing, and rerun.
+## Steps (what the doctor checks)
 
-## Steps
-1. **Prereqs** — `node -v && npm -v`; `gh auth status` (fix: `gh auth login`); `command -v claude` (fix: `npm install -g @anthropic-ai/claude-code`, then `claude` to log in with Pro, or `claude setup-token`). Login itself is proven in step 5.
-2. **Control reachable** — `curl -sS $CONTROL_BASE_URL/api/watch`. Fail → `npm install && npm run dev` (keep it running in its own terminal).
-3. **Live configured** — `GET /api/watch` → `watch.configured === true` (non-empty `repo` and ≥1 `slackWatch` surface, or includeDms/includeMpims). Fail → open `/get-live`, set repo + Slack surface, **Continue → Live**.
-4. **Workers** — in a separate terminal `./scripts/dogfood-up` (leave running); `./scripts/dogfood-up --check` to recheck. Then `GET /api/watchers/status` → rows `review-worker`, `github-outbox`, `github-watch` have `display_status` idle/ticking/waiting **and** have reported (`updated_at` set, not `stale`).
-5. **Verify Claude** — `GET /api/review/claude-status` (`ok`, `hint`); `POST /api/review/run` `{"kind":"verify"}` → `job.id`; poll `GET /api/review/jobs/:id` every 3s up to **90s** until `status: done` with result `claude ok`. Fail → follow `hint` (`claude` / `claude setup-token` / `./scripts/dogfood-up`).
-6. **Slack MCP** — `claude mcp list` should include a Slack server. Missing → add one with `claude mcp add …`, then show the user the **Agent loop** section of `scripts/slack-watch.md` (Slack MCP → `POST /api/slack/inbox`; no Slack token in Control). Optional: `./scripts/github-watcher-tick.sh --dry-run`.
-7. **Summary** — table of every check (PASS/FAIL + next command), then one line: **"✅ You're live."** or **"❌ Fix these N things"**.
+1. **Prereqs** — `node`/`npm` versions, `gh auth status`, `claude` on PATH and logged in
+   (Pro/Max login via `claude` → `/login`, or headless `claude setup-token` → `CLAUDE_CODE_OAUTH_TOKEN`).
+   Never require or suggest `ANTHROPIC_API_KEY`; if it is set, warn: it overrides the Pro login (`unset ANTHROPIC_API_KEY`).
+2. **Control reachable** at `CONTROL_BASE_URL`. Fix: `npm install && npm run dev`.
+3. **Live configured** — `GET /api/watch` has `repo` and ≥1 `slackWatch` surface. Fix: open `$CONTROL_BASE_URL/get-live`.
+4. **Workers** — `./scripts/dogfood-up --check`, and `GET /api/watchers/status` shows `review-worker`,
+   `github-outbox`, `github-watch` fresh (reported, not stale, not error). Fix: `./scripts/dogfood-up`.
+5. **Verify Claude** — `GET /api/review/claude-status`, then `POST /api/review/run {"kind":"verify"}`,
+   poll `GET /api/review/jobs/:id` up to 90s. Timeout = FAIL (fail closed).
+6. **Slack MCP** — `claude mcp list` shows a Slack server; otherwise print the agent-loop block from
+   `scripts/slack-watch.md`. Plus `./scripts/github-watcher-tick.sh --dry-run` (existing mode: prints
+   would-post, does not curl Control at all — no inbox POST, no status PUT).
+7. **Summary** — table ending in "you're live" or "fix these N". Exit code is nonzero when anything fails.
 
-## References
-README.md → Dogfood, Reference, Verify Claude, Standing watchers, Watcher status API; `scripts/dogfood-up`, `scripts/slack-watch.md`, `scripts/github-watcher.md`.
+## Rules
+
+- Talk to Control over HTTP only. Never read or write `.control/`.
+- Never collect, ask for, or print tokens/keys. Never post to Slack.
+- If Control is down, steps 3–6 are SKIP (blocked), not pass.

@@ -1,100 +1,169 @@
 #!/usr/bin/env bash
-# control-doctor — read-mostly onboarding checks for Control (used by /control-onboard).
-# HTTP only to Control (curl). Never reads/writes .control/. No tokens. No Slack sends.
-# Only write: POST /api/review/run {kind:"verify"} (idempotent while pending|claimed).
-# Usage: ./scripts/control-doctor [--no-verify] [--tick-dry-run]
+# control-doctor — check that Control is set up end to end (used by /control-onboard).
+#
+# Usage: ./scripts/control-doctor [--json] [--no-verify] [--help]
+#   --json       also print a machine-readable JSON summary at the end
+#   --no-verify  skip the Claude verify smoke job (step 5 POST)
+# Env: CONTROL_BASE_URL (default http://localhost:3000), VERIFY_TIMEOUT (default 90s)
+#
+# Rules: HTTP (curl) only to talk to Control — never reads/writes .control/.
+# Never collects or prints tokens. Never posts to Slack. Read-only apart from
+# the idempotent verify smoke job (POST /api/review/run {kind:"verify"}).
+# Exit 0 only when every step passed.
 set -uo pipefail
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASE="${CONTROL_BASE_URL:-http://localhost:3000}"
-DO_VERIFY=1; DO_TICK=0
-for a in "$@"; do case "$a" in
-  --no-verify) DO_VERIFY=0 ;; --tick-dry-run) DO_TICK=1 ;;
-  -h|--help) sed -n 2,5p "$0"; exit 0 ;; esac; done
-
-declare -a NAMES STATUS FIXES
-rec() { NAMES+=("$1"); STATUS+=("$2"); FIXES+=("${3:-}"); printf '[%s] %s%s\n' "$2" "$1" "${3:+  → $3}"; }
-# json <expr> : evaluate JS expr on parsed stdin as `j`
-json() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);const v=('"$1"');process.stdout.write(v==null?"":String(v))}catch(e){}})'; }
-get() { curl -sS -m 10 "$BASE$1" 2>/dev/null; }
-
-echo "== Control doctor  (CONTROL_BASE_URL=$BASE) =="
-
-# 1. Prereqs
-echo "-- 1. Prereqs"
-if command -v node >/dev/null && command -v npm >/dev/null; then rec "node/npm ($(node -v))" PASS
-else rec "node/npm" FAIL "install Node.js 20+ (https://nodejs.org) then rerun"; fi
-if ! command -v gh >/dev/null; then rec "gh CLI" FAIL "install gh (https://cli.github.com) then: gh auth login"
-elif gh auth status >/dev/null 2>&1; then rec "gh auth status" PASS
-else rec "gh auth status" FAIL "gh auth login"; fi
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then echo "  note: ANTHROPIC_API_KEY is set in this shell; Control does not use it (Pro login / setup-token only)."; fi
-if ! command -v claude >/dev/null; then rec "claude on PATH" FAIL "npm install -g @anthropic-ai/claude-code && claude   (log in with Pro, or: claude setup-token)"
-else rec "claude on PATH" PASS
-  echo "  (login is proven end-to-end by step 5 Verify Claude: claude -p on the worker)"; fi
-
-# 2. Reachable
-echo "-- 2. Control reachable"
-WATCH="$(get /api/watch)"
-if [ -z "$WATCH" ]; then
-  rec "Control at $BASE" FAIL "cd $ROOT && npm install && npm run dev"
-  UP=0
-else rec "Control at $BASE" PASS; UP=1; fi
-
-if [ "$UP" = 1 ]; then
-# 3. Live configured
-echo "-- 3. Live configured (GET /api/watch)"
-CONF="$(printf '%s' "$WATCH" | json 'j.watch&&j.watch.configured')"
-REPO="$(printf '%s' "$WATCH" | json 'j.watch&&j.watch.repo')"
-SURF="$(printf '%s' "$WATCH" | json 'j.watch&&j.watch.surfaceCount')"
-if [ "$CONF" = "true" ]; then rec "watch configured (repo=$REPO, surfaces=$SURF)" PASS
-else rec "watch configured" FAIL "open $BASE/get-live (repo + ≥1 Slack surface → Continue → Live)"; fi
-
-# 4. Workers
-echo "-- 4. Workers (GET /api/watchers/status)"
-ST="$(get /api/watchers/status)"
-for id in review-worker github-outbox github-watch; do
-  ds="$(printf '%s' "$ST" | json "(j.watchers||[]).filter(w=>w.id==='$id').map(w=>w.display_status+(w.updated_at?'':' (never reported)'))[0]")"
-  case "$ds" in idle|ticking|waiting) rec "$id: $ds" PASS ;;
-    *) rec "$id: ${ds:-missing}" FAIL "cd $ROOT && ./scripts/dogfood-up   (leave running; ./scripts/dogfood-up --check to recheck)" ;; esac
+cd "$ROOT"
+BASE="${CONTROL_BASE_URL:-http://localhost:3000}"; BASE="${BASE%/}"
+VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-90}"
+JSON=0; DO_VERIFY=1
+for a in "$@"; do
+  case "$a" in
+    --json) JSON=1 ;;
+    --no-verify) DO_VERIFY=0 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    *) echo "unknown flag: $a" >&2; exit 2 ;;
+  esac
 done
 
-# 5. Verify Claude
-echo "-- 5. Verify Claude"
-CS="$(get /api/review/claude-status)"
-CSOK="$(printf '%s' "$CS" | json 'j.ok')"; HINT="$(printf '%s' "$CS" | json 'j.hint')"
-if [ "$CSOK" = "true" ]; then rec "claude-status (server sees claude)" PASS
-else rec "claude-status" FAIL "${HINT:-install claude + run claude (Pro) or claude setup-token}"; fi
-if [ "$DO_VERIFY" = 1 ]; then
-  RUN="$(curl -sS -m 15 -X POST "$BASE/api/review/run" -H 'Content-Type: application/json' -d '{"kind":"verify"}' 2>/dev/null)"
-  JID="$(printf '%s' "$RUN" | json 'j.job&&(j.job.id||j.job.job_id)')"
-  if [ -z "$JID" ]; then
-    rec "verify job enqueued" FAIL "$(printf '%s' "$RUN" | json 'j.detail||j.error||j.hint') → ./scripts/dogfood-up"
+NAMES=(); RESULTS=(); FIXES=()
+record() { # name result(PASS|FAIL|WARN|SKIP) detail fix
+  NAMES+=("$1"); RESULTS+=("$2"); FIXES+=("${4:-}")
+  printf '  [%s] %s — %s\n' "$2" "$1" "$3"
+  [[ -n "${4:-}" && "$2" != PASS ]] && printf '         fix: %s\n' "$4"
+}
+hdr() { printf '\n== %s ==\n' "$1"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+# json_get <json> <js expr on d>  (uses node; prints "" on error)
+json_get() { have node || { echo ""; return; }; node -e 'let d;try{d=JSON.parse(process.argv[1])}catch{process.exit(0)};try{const v=('"$2"');process.stdout.write(v===undefined||v===null?"":typeof v==="object"?JSON.stringify(v):String(v))}catch{}' "$1"; }
+http() { # METHOD PATH [BODY] -> sets CODE, BODY
+  local out
+  if [[ -n "${3:-}" ]]; then
+    out=$(curl -sS -m 10 -X "$1" -H 'content-type: application/json' -d "$3" -w '\n%{http_code}' "$BASE$2" 2>/dev/null) || { CODE=000; BODY=""; return 1; }
   else
-    echo "  job $JID — polling up to 90s"
-    S=""; for i in $(seq 1 30); do
-      J="$(get "/api/review/jobs/$JID")"; S="$(printf '%s' "$J" | json 'j.status')"
-      case "$S" in done|ok|failed|error|cancelled) break ;; esac; sleep 3; done
-    SUM="$(printf '%s' "$J" | json '(j.result&&j.result.summary)||j.error||(j.job&&j.job.error)||""')"
-    RS="$(printf "%s" "$J" | json "j.result&&j.result.status")"; if [ "$S" = done ] && [ "${RS:-ok}" = ok ]; then rec "Verify Claude ($SUM)" PASS
-    else rec "Verify Claude (status=${S:-unknown} $SUM)" FAIL "claude (log in with Pro) or claude setup-token; keep ./scripts/dogfood-up running; rerun ./scripts/control-doctor"; fi
+    out=$(curl -sS -m 10 -X "$1" -w '\n%{http_code}' "$BASE$2" 2>/dev/null) || { CODE=000; BODY=""; return 1; }
   fi
-else echo "  (skipped POST /api/review/run — --no-verify)"; fi
+  CODE="${out##*$'\n'}"; BODY="${out%$'\n'*}"
+}
+
+echo "control-doctor — CONTROL_BASE_URL=$BASE"
+
+# ---- 1. Prereqs ----
+hdr "1. Prereqs"
+if have node; then
+  v=$(node --version); maj=${v#v}; maj=${maj%%.*}
+  if (( maj >= 18 )); then record "node" PASS "$v"; else record "node" FAIL "$v (need >= 18)" "install Node 20 LTS: https://nodejs.org (or: nvm install 20)"; fi
+else record "node" FAIL "not found" "install Node 20 LTS: https://nodejs.org (or: nvm install 20)"; fi
+if have npm; then record "npm" PASS "$(npm --version)"; else record "npm" FAIL "not found" "install Node 20 LTS (bundles npm): https://nodejs.org"; fi
+if have gh; then
+  if gh auth status >/dev/null 2>&1; then record "gh auth" PASS "gh authenticated"
+  else record "gh auth" FAIL "gh not logged in" "gh auth login"; fi
+else record "gh auth" FAIL "gh not installed" "install GitHub CLI: https://cli.github.com then: gh auth login"; fi
+CLAUDE_OK=0
+if have claude; then
+  if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then record "claude login" PASS "claude on PATH; CLAUDE_CODE_OAUTH_TOKEN set (value not shown)"; CLAUDE_OK=1
+  elif [[ -f "$HOME/.claude/.credentials.json" || -f "$HOME/.claude.json" ]] || (claude auth status >/dev/null 2>&1); then
+    record "claude login" PASS "claude on PATH ($(claude --version 2>/dev/null | head -1)); login present"; CLAUDE_OK=1
+  else record "claude login" FAIL "claude on PATH but not logged in" "claude   (then /login with your Pro/Max account)  — or: claude setup-token, then export CLAUDE_CODE_OAUTH_TOKEN=<token> in your shell profile"; fi
+else
+  record "claude CLI" FAIL "claude not on PATH" "npm install -g @anthropic-ai/claude-code && claude   (then /login with your Pro/Max account; headless: claude setup-token)"
+fi
+if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+  record "ANTHROPIC_API_KEY" WARN "is set — it overrides your Pro login and bills the API" "unset ANTHROPIC_API_KEY   (and remove it from your shell profile)"
 fi
 
-# 6. Slack MCP
-echo "-- 6. Slack MCP in Claude"
-if command -v claude >/dev/null; then
-  if claude mcp list 2>/dev/null | grep -qi slack; then rec "Slack MCP configured" PASS
-  else rec "Slack MCP configured" FAIL "claude mcp add <slack-server> …  then follow scripts/slack-watch.md (## Agent loop)"
-    sed -n '/^## Agent loop/,/^### Message POST/p' "$ROOT/scripts/slack-watch.md"; fi
-else rec "Slack MCP configured" FAIL "install claude first (step 1), then claude mcp list"; fi
-if [ "$DO_TICK" = 1 ]; then
-  if "$ROOT/scripts/github-watcher-tick.sh" --dry-run >/tmp/control-doctor-tick.log 2>&1; then rec "github-watcher-tick --dry-run" PASS
-  else rec "github-watcher-tick --dry-run" FAIL "see /tmp/control-doctor-tick.log; gh auth login"; fi
-fi
+# ---- 2. Control reachable ----
+hdr "2. Control reachable"
+UP=0
+if http GET /api/watch && [[ "$CODE" == 200 ]]; then UP=1; record "Control at $BASE" PASS "HTTP 200"
+else record "Control at $BASE" FAIL "unreachable (HTTP $CODE)" "npm install && npm run dev   (in $ROOT)"; fi
+blocked() { record "$1" SKIP "blocked: Control is down" "fix step 2 first: npm install && npm run dev"; }
 
-# 7. Summary
-echo; echo "== Summary =="
-printf '%-6s %-55s %s\n' RESULT CHECK NEXT
-N=0; for i in "${!NAMES[@]}"; do printf '%-6s %-55s %s\n' "${STATUS[$i]}" "${NAMES[$i]}" "${FIXES[$i]}"; [ "${STATUS[$i]}" = FAIL ] && N=$((N+1)); done
+# ---- 3. Live configured ----
+hdr "3. Live configured"
+if (( UP )); then
+  repo=$(json_get "$BODY" 'd.watch.repo'); sc=$(json_get "$BODY" 'd.watch.surfaceCount')
+  if [[ -n "$repo" && "${sc:-0}" -ge 1 ]]; then record "Live config" PASS "repo=$repo, slackWatch surfaces=$sc"
+  else record "Live config" FAIL "repo='${repo:-<none>}', slackWatch surfaces=${sc:-0}" "open $BASE/get-live and set repo + at least one Slack surface"; fi
+else blocked "Live config"; fi
+
+# ---- 4. Workers ----
+hdr "4. Workers"
+if (( UP )); then
+  if CONTROL_BASE_URL="$BASE" ./scripts/dogfood-up --check >/tmp/control-doctor-dogfood.$$ 2>&1; then record "dogfood-up --check" PASS "ok"
+  else record "dogfood-up --check" FAIL "$(tail -1 /tmp/control-doctor-dogfood.$$)" "./scripts/dogfood-up"; fi
+  rm -f /tmp/control-doctor-dogfood.$$
+  if http GET /api/watchers/status && [[ "$CODE" == 200 ]]; then
+    for id in review-worker github-outbox github-watch; do
+      st=$(json_get "$BODY" "(()=>{const r=(Array.isArray(d.watchers)?d.watchers:Object.values(d.watchers||{})).find(w=>w.id==='$id');if(!r)return 'missing';if(!r.updated_at)return 'never-reported';if(r.stale)return 'stale';if(r.status==='error')return 'error';return 'fresh:'+r.status})()")
+      if [[ "$st" == fresh:* ]]; then record "watcher $id" PASS "$st"
+      else record "watcher $id" FAIL "${st:-unknown}" "./scripts/dogfood-up"; fi
+    done
+  else record "watchers status" FAIL "GET /api/watchers/status HTTP $CODE" "./scripts/dogfood-up"; fi
+else blocked "dogfood-up --check"; blocked "watchers status"; fi
+
+# ---- 5. Verify Claude ----
+hdr "5. Verify Claude"
+if (( UP )); then
+  if http GET /api/review/claude-status && [[ "$(json_get "$BODY" 'd.ok')" == true ]]; then
+    record "server sees claude" PASS "claude on server PATH"
+    if (( DO_VERIFY )); then
+      http POST /api/review/run '{"kind":"verify"}'
+      jid=$(json_get "$BODY" 'd.job&&(d.job.id||d.job.job_id)||d.job_id||""')
+      if [[ "$CODE" != 200 && "$CODE" != 202 || -z "$jid" ]]; then
+        record "verify job" FAIL "POST /api/review/run HTTP $CODE: $(json_get "$BODY" 'd.hint||d.error')" "./scripts/dogfood-up   (review-worker must be running)"
+      else
+        end=$((SECONDS+VERIFY_TIMEOUT)); st=pending
+        while (( SECONDS < end )); do
+          http GET "/api/review/jobs/$jid"; st=$(json_get "$BODY" 'd.status||(d.job&&d.job.status)')
+          [[ "$st" == done || "$st" == failed ]] && break; sleep 3
+        done
+        case "$st" in
+          done) record "verify job" PASS "job $jid done" ;;
+          failed) record "verify job" FAIL "job $jid failed: $(json_get "$BODY" 'd.error&&(d.error.message||d.error)')" "claude   (/login with Pro), then ./scripts/dogfood-up" ;;
+          *) record "verify job" FAIL "timed out after ${VERIFY_TIMEOUT}s (status=$st)" "./scripts/dogfood-up   (check review-worker on $BASE/get-live/workers)" ;;
+        esac
+      fi
+    else record "verify job" SKIP "--no-verify" ""; fi
+  else
+    record "server sees claude" FAIL "$(json_get "$BODY" 'd.hint' || true)" "npm install -g @anthropic-ai/claude-code && claude   (/login), then restart: npm run dev"
+    record "verify job" SKIP "blocked: claude not available to Control" "fix 'server sees claude' first"
+  fi
+else blocked "server sees claude"; blocked "verify job"; fi
+
+# ---- 6. Slack MCP + GitHub watcher dry-run ----
+hdr "6. Slack MCP + GitHub watcher"
+if (( CLAUDE_OK )); then
+  if claude mcp list 2>/dev/null | grep -qi slack; then record "Slack MCP" PASS "claude mcp list shows a Slack server"
+  else record "Slack MCP" FAIL "no Slack server in 'claude mcp list'" "add a Slack MCP server to Claude Code (claude mcp add ...), then run the loop in scripts/slack-watch.md (copy block below)"; SHOW_SLACK=1; fi
+else record "Slack MCP" SKIP "blocked: claude CLI not ready (step 1)" "fix 'claude' in step 1, then add a Slack MCP server"; SHOW_SLACK=1; fi
+if [[ "${SHOW_SLACK:-0}" == 1 && -f scripts/slack-watch.md ]]; then
+  echo "  --- copy-paste for your Slack-MCP agent (from scripts/slack-watch.md) ---"
+  sed -n '/^## Agent loop/,/^### Message POST/p' scripts/slack-watch.md | sed '$d' | sed 's/^/  | /'
+fi
+# github-watcher-tick.sh --dry-run: prints would-post, does not curl Control (no inbox POST, no status PUT).
+if (( UP )) && have gh && gh auth status >/dev/null 2>&1; then
+  if out=$(CONTROL_BASE_URL="$BASE" ./scripts/github-watcher-tick.sh --dry-run 2>&1); then record "github-watcher-tick --dry-run" PASS "$(echo "$out" | tail -1)"
+  else record "github-watcher-tick --dry-run" FAIL "$(echo "$out" | tail -1)" "open $BASE/get-live (repo), gh auth login, then ./scripts/github-watcher-tick.sh --dry-run"; fi
+else record "github-watcher-tick --dry-run" SKIP "blocked: needs Control up + gh auth" "fix steps 1-2 first"; fi
+
+# ---- 7. Summary ----
+hdr "7. Summary"
+nfail=0
+printf '  %-32s %s\n' STEP RESULT
+for i in "${!NAMES[@]}"; do
+  printf '  %-32s %s\n' "${NAMES[$i]}" "${RESULTS[$i]}"
+  [[ "${RESULTS[$i]}" == FAIL || ( "${RESULTS[$i]}" == SKIP && -n "${FIXES[$i]}" ) ]] && nfail=$((nfail+1))
+done
 echo
-if [ "$N" = 0 ]; then echo "✅ You're live."; exit 0; else echo "❌ Fix these $N thing(s), then rerun ./scripts/control-doctor"; exit 1; fi
+if (( nfail == 0 )); then echo "you're live ✅"; else
+  nreal=0; for r in "${RESULTS[@]}"; do [[ $r == FAIL ]] && nreal=$((nreal+1)); done
+  echo "fix these $nreal (plus $((nfail-nreal)) blocked step(s) will re-run after):"
+  for i in "${!NAMES[@]}"; do [[ "${RESULTS[$i]}" == FAIL ]] && echo "  - ${NAMES[$i]}: ${FIXES[$i]}"; done
+fi
+if (( JSON )); then
+  printf '\n{"base_url":"%s","ok":%s,"steps":[' "$BASE" "$([[ $nfail == 0 ]] && echo true || echo false)"
+  for i in "${!NAMES[@]}"; do (( i )) && printf ','; printf '{"name":"%s","result":"%s"}' "${NAMES[$i]//\"/}" "${RESULTS[$i]}"; done
+  printf ']}\n'
+fi
+(( nfail == 0 )) || exit 1

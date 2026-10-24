@@ -1,14 +1,9 @@
+New? run `/control-onboard` in Claude Code (or `./scripts/control-doctor` in a shell).
+
 # Control — V0.9 (chip 4: polish / escape hatches)
 
 
 ## Dogfood
-
-> **New? In Claude Code run `/control-onboard`.**
-> It walks prereqs (node, `gh auth`, `claude` Pro login — never `ANTHROPIC_API_KEY`), checks Control is up,
-> confirms Live watch config (`GET /api/watch`), worker heartbeats (`GET /api/watchers/status`),
-> runs Verify Claude (`POST /api/review/run {kind:"verify"}`), and checks Slack MCP (`claude mcp list`).
-> Same checks without Claude: `./scripts/control-doctor` (HTTP only, no secrets, no Slack sends, safe to rerun).
-> Each FAIL prints the exact next command; ends with "You're live" or "Fix these N things".
 
 **Get Live → `./scripts/dogfood-up` → Verify Claude → MCP Slack (out-of-band).**
 
