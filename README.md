@@ -3,6 +3,13 @@
 
 ## Dogfood
 
+> **New? In Claude Code run `/control-onboard`.**
+> It walks prereqs (node, `gh auth`, `claude` Pro login — never `ANTHROPIC_API_KEY`), checks Control is up,
+> confirms Live watch config (`GET /api/watch`), worker heartbeats (`GET /api/watchers/status`),
+> runs Verify Claude (`POST /api/review/run {kind:"verify"}`), and checks Slack MCP (`claude mcp list`).
+> Same checks without Claude: `./scripts/control-doctor` (HTTP only, no secrets, no Slack sends, safe to rerun).
+> Each FAIL prints the exact next command; ends with "You're live" or "Fix these N things".
+
 **Get Live → `./scripts/dogfood-up` → Verify Claude → MCP Slack (out-of-band).**
 
 1. **Get Live** (`/get-live`) — repo + Slack; Continue → Live (no tokens). Sidebar **Get Live** / **Workers**; **Skip** → `/now` when configured (never wipes `watch.json`).
