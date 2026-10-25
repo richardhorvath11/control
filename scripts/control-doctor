@@ -43,6 +43,8 @@ record() { # name result(PASS|FAIL|WARN|SKIP) detail fix
 }
 hdr() { printf '\n== %s ==\n' "$1"; }
 have() { command -v "$1" >/dev/null 2>&1; }
+# Portable timeout (macOS has no `timeout`): use it when present, else run unbounded.
+run_to() { local t="$1"; shift; if have timeout; then timeout "$t" "$@"; else "$@"; fi; }
 # json_get <json> <js expr on d>  (uses node; prints "" on error)
 json_get() { have node || { echo ""; return; }; node -e 'let d;try{d=JSON.parse(process.argv[1])}catch{process.exit(0)};try{const v=('"$2"');process.stdout.write(v===undefined||v===null?"":typeof v==="object"?JSON.stringify(v):String(v))}catch{}' "$1"; }
 http() { # METHOD PATH [BODY] -> sets CODE, BODY
@@ -81,6 +83,12 @@ if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   record "ANTHROPIC_API_KEY" WARN "is set — it overrides your Pro login and bills the API" "unset ANTHROPIC_API_KEY   (and remove it from your shell profile)"
 fi
 
+# Child scripts are run via their interpreter below (so a checkout without exec bits — zip
+# download, core.fileMode=false, copied tree — doesn't break the doctor), but dogfood-up's
+# workers are spawned directly and DO need +x. Only reported when something is missing.
+noexec=(); for f in scripts/dogfood-up scripts/control-review-worker scripts/github-outbox-worker scripts/github-watcher-tick.sh scripts/control-doctor; do [[ -f "$f" && ! -x "$f" ]] && noexec+=("$f"); done
+if (( ${#noexec[@]} )); then record "script exec bits" FAIL "not executable: ${noexec[*]}" "chmod +x scripts/control-doctor scripts/dogfood-up scripts/control-review-worker scripts/github-outbox-worker scripts/github-watcher-tick.sh scripts/control-review-run"; fi
+
 # ---- 2. Control reachable ----
 hdr "2. Control reachable"
 UP=0
@@ -99,7 +107,7 @@ else blocked "Live config"; fi
 # ---- 4. Workers ----
 hdr "4. Workers"
 if (( UP )); then
-  if ./scripts/dogfood-up --check >/tmp/control-doctor-dogfood.$$ 2>&1; then record "dogfood-up --check" PASS "ok"
+  if bash ./scripts/dogfood-up --check >/tmp/control-doctor-dogfood.$$ 2>&1; then record "dogfood-up --check" PASS "ok"
   else record "dogfood-up --check" FAIL "$(tail -3 /tmp/control-doctor-dogfood.$$ | tr '\n' ' ')" "CONTROL_BASE_URL=$BASE ./scripts/dogfood-up --check   (if Control is up but this fails, check node can fetch $BASE)"; fi
   rm -f /tmp/control-doctor-dogfood.$$
   if http GET /api/watchers/status && [[ "$CODE" == 200 ]]; then
@@ -143,11 +151,11 @@ else blocked "server sees claude"; blocked "verify job"; fi
 # ---- 6. Slack MCP + GitHub watcher dry-run ----
 hdr "6. Slack MCP + GitHub watcher"
 if (( CLAUDE_OK )); then
-  SLACK_FIX="claude plugin install slack@claude-plugins-official   (official Slack MCP, https://mcp.slack.com/mcp), then in a claude session run /mcp → slack → Authenticate (browser OAuth; needs you + workspace admin approval). Do NOT use bare 'claude mcp add --transport http slack https://mcp.slack.com/mcp' — it fails (no dynamic client registration)."
-  mcp=$(timeout 60 claude mcp list 2>/dev/null | grep -i slack || true)
+  SLACK_FIX="claude plugin marketplace update anthropic-plugin-directory && claude plugin install slack@anthropic-plugin-directory   (official Slack MCP at https://mcp.slack.com/mcp; shows as plugin:slack:slack). Then in a claude session: /mcp → slack → Authenticate, and click Allow in the browser IMMEDIATELY — the localhost:3118 OAuth callback times out fast (just retry if it does). Needs you + workspace admin approval. Do NOT use bare 'claude mcp add --transport http slack https://mcp.slack.com/mcp' (fails: no dynamic client registration)."
+  mcp=$(run_to 60 claude mcp list 2>/dev/null | grep -i slack || true)
   if [[ -z "$mcp" ]]; then record "Slack MCP" FAIL "no Slack server in 'claude mcp list'" "$SLACK_FIX"; SHOW_SLACK=1
-  elif grep -qi "connected" <<<"$mcp" && ! grep -qiE "needs auth|failed" <<<"$mcp"; then record "Slack MCP" PASS "$(head -1 <<<"$mcp" | sed 's/:.*- / - /')"
-  else record "Slack MCP" FAIL "Slack MCP present but not connected: $(head -1 <<<"$mcp" | sed 's/.* - //')" "claude, then /mcp → slack → Authenticate (needs you in a browser)"; SHOW_SLACK=1; fi
+  elif grep -qi "connected" <<<"$mcp" && ! grep -qiE "needs auth|failed" <<<"$mcp"; then record "Slack MCP" PASS "$(grep -i connected <<<"$mcp" | head -1 | sed -E 's/^([^ ]+): .* - /\1 - /')"
+  else record "Slack MCP" FAIL "Slack MCP present but not connected: $(head -1 <<<"$mcp" | sed 's/.* - //')" "claude, then /mcp → slack → Authenticate; click Allow in the browser immediately (localhost:3118 callback times out fast). Needs you."; SHOW_SLACK=1; fi
 else record "Slack MCP" SKIP "blocked: claude CLI not ready (step 1)" "fix 'claude' in step 1, then add a Slack MCP server"; SHOW_SLACK=1; fi
 if [[ "${SHOW_SLACK:-0}" == 1 && -f scripts/slack-watch.md ]]; then
   echo "  --- copy-paste for your Slack-MCP agent (from scripts/slack-watch.md) ---"
@@ -155,8 +163,8 @@ if [[ "${SHOW_SLACK:-0}" == 1 && -f scripts/slack-watch.md ]]; then
 fi
 # github-watcher-tick.sh --dry-run: prints would-post, does not curl Control (no inbox POST, no status PUT).
 if (( UP )) && have gh && gh auth status >/dev/null 2>&1; then
-  if out=$(timeout 120 ./scripts/github-watcher-tick.sh --dry-run 2>&1); then record "github-watcher-tick --dry-run" PASS "$(echo "$out" | tail -1)"
-  else record "github-watcher-tick --dry-run" FAIL "$(echo "$out" | grep -iE 'error|fail' | tail -2 | tr '\n' ' ')$(echo "$out" | tail -1)" "open $BASE/get-live (repo), gh auth login, then ./scripts/github-watcher-tick.sh --dry-run"; fi
+  if out=$(run_to 120 bash ./scripts/github-watcher-tick.sh --dry-run 2>&1); then record "github-watcher-tick --dry-run" PASS "$(echo "$out" | tail -1)"
+  else record "github-watcher-tick --dry-run" FAIL "$(echo "$out" | grep -iE 'error|fail' | tail -2 | tr '\n' ' ')$(echo "$out" | tail -1)" "open $BASE/get-live (repo), gh auth login, then bash ./scripts/github-watcher-tick.sh --dry-run"; fi
 else record "github-watcher-tick --dry-run" SKIP "blocked: needs Control up + gh auth" "fix steps 1-2 first"; fi
 
 # ---- 7. Summary ----

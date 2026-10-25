@@ -32,12 +32,20 @@ Goal: get the user to "you're live" with Control, or to an exact, short list of 
 5. **Verify Claude** — `GET /api/review/claude-status`, then `POST /api/review/run {"kind":"verify"}`,
    poll `GET /api/review/jobs/:id` up to 90s. Timeout = FAIL (fail closed).
 6. **Slack MCP** — `claude mcp list` shows a *connected* Slack server. Fix (needs the user, browser OAuth):
-   `claude plugin install slack@claude-plugins-official`, then `/mcp` → slack → Authenticate.
+   `claude plugin marketplace update anthropic-plugin-directory && claude plugin install slack@anthropic-plugin-directory`
+   (shows in `claude mcp list` as `plugin:slack:slack … Connected`; `slack@claude-plugins-official` does not exist
+   on CLI 2.1.x), then `/mcp` → slack → Authenticate and **click Allow immediately** — the localhost:3118
+   OAuth callback times out fast; just retry if it does.
    Don't suggest bare `claude mcp add … https://mcp.slack.com/mcp` (fails: no dynamic client registration).
    Never add tokens yourself. Also print the agent-loop block from
    `scripts/slack-watch.md`. Plus `./scripts/github-watcher-tick.sh --dry-run` (existing mode: prints
    would-post, does not curl Control at all — no inbox POST, no status PUT).
 7. **Summary** — table ending in "you're live" or "fix these N". Exit code is nonzero when anything fails.
+
+## If the doctor itself won't run
+
+Run it as `bash scripts/control-doctor`. If it reports `script exec bits` FAIL (checkout lost +x — zip
+download, copied tree, `core.fileMode=false`), run the printed `chmod +x …`; dogfood-up's workers need it.
 
 ## Rules
 
