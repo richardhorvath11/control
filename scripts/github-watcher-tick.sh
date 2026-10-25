@@ -19,7 +19,8 @@
 #
 # Env:
 #   CONTROL_BASE_URL   default http://localhost:3000
-#   DRY_RUN=1          print would-post / skip; do not curl Control
+#   DRY_RUN=1          read-only: print would-post; writes NOTHING (no .control/ state,
+#                      snapshots, follows, checkpoint, status PUT, or inbox POST)
 #   WATCHER_FORCE_POST=1  on first see of a PR, post current snapshot (default: baseline only)
 set -euo pipefail
 
@@ -58,9 +59,14 @@ need_cmd gh
 need_cmd curl
 need_cmd python3
 
-mkdir -p "$CONTROL_DIR" "$SNAP_DIR"
+if [[ "$DRY_RUN" != "1" ]]; then mkdir -p "$CONTROL_DIR" "$SNAP_DIR"; fi
 
 # --- ensure watch.json ---
+# Dry-run never writes into .control/: materialize the example in a temp file instead.
+if [[ "$DRY_RUN" == "1" && ! -f "$WATCH_PATH" ]]; then
+  DRY_TMP="$(mktemp -d)"; trap 'rm -rf "$DRY_TMP"' EXIT
+  WATCH_PATH="$DRY_TMP/watch.json"
+fi
 if [[ ! -f "$WATCH_PATH" ]]; then
   if [[ -f "$WATCH_EXAMPLE" ]]; then
     # Strip _comment_* keys for a clean runtime config
@@ -124,7 +130,10 @@ def load_json(path: str, default: Any = None) -> Any:
 
 
 def write_json(path: str, data: Any) -> None:
-    tmp = path + ".tmp"
+    if DRY_RUN:
+        print(f"dry-run: would write {os.path.relpath(path, os.environ.get('ROOT', '.'))}", file=sys.stderr)
+        return
+    tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
@@ -144,7 +153,8 @@ def write_pr_snapshot(
     pr_data: dict,
 ) -> None:
     """V0.7 chip 4: write Live Review snapshot JSON (Control reads via API)."""
-    os.makedirs(SNAP_DIR, exist_ok=True)
+    if not DRY_RUN:
+        os.makedirs(SNAP_DIR, exist_ok=True)
     files: list[dict[str, str]] = []
     try:
         raw_files = gh_json(
