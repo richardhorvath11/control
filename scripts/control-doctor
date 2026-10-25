@@ -14,7 +14,16 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# Claude Code's native installer puts claude in ~/.local/bin; non-login shells often miss it.
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) [[ -d "$HOME/.local/bin" ]] && PATH="$HOME/.local/bin:$PATH" ;; esac
+export PATH
+# Normalize CONTROL_BASE_URL: ":3000" / "3000" / "localhost:3000" -> http://localhost:3000.
+# curl tolerates sloppy URLs but node fetch (dogfood-up) does not, so pass children a full URL.
 BASE="${CONTROL_BASE_URL:-http://localhost:3000}"; BASE="${BASE%/}"
+[[ "$BASE" =~ ^[0-9]+$ ]] && BASE="http://localhost:$BASE"
+[[ "$BASE" == :* ]] && BASE="http://localhost$BASE"
+[[ "$BASE" == *://* ]] || BASE="http://$BASE"
+export CONTROL_BASE_URL="$BASE"
 VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-90}"
 JSON=0; DO_VERIFY=1
 for a in "$@"; do
@@ -90,14 +99,14 @@ else blocked "Live config"; fi
 # ---- 4. Workers ----
 hdr "4. Workers"
 if (( UP )); then
-  if CONTROL_BASE_URL="$BASE" ./scripts/dogfood-up --check >/tmp/control-doctor-dogfood.$$ 2>&1; then record "dogfood-up --check" PASS "ok"
-  else record "dogfood-up --check" FAIL "$(tail -1 /tmp/control-doctor-dogfood.$$)" "./scripts/dogfood-up"; fi
+  if ./scripts/dogfood-up --check >/tmp/control-doctor-dogfood.$$ 2>&1; then record "dogfood-up --check" PASS "ok"
+  else record "dogfood-up --check" FAIL "$(tail -3 /tmp/control-doctor-dogfood.$$ | tr '\n' ' ')" "CONTROL_BASE_URL=$BASE ./scripts/dogfood-up --check   (if Control is up but this fails, check node can fetch $BASE)"; fi
   rm -f /tmp/control-doctor-dogfood.$$
   if http GET /api/watchers/status && [[ "$CODE" == 200 ]]; then
     for id in review-worker github-outbox github-watch; do
       st=$(json_get "$BODY" "(()=>{const r=(Array.isArray(d.watchers)?d.watchers:Object.values(d.watchers||{})).find(w=>w.id==='$id');if(!r)return 'missing';if(!r.updated_at)return 'never-reported';if(r.stale)return 'stale';if(r.status==='error')return 'error';return 'fresh:'+r.status})()")
       if [[ "$st" == fresh:* ]]; then record "watcher $id" PASS "$st"
-      else record "watcher $id" FAIL "${st:-unknown}" "./scripts/dogfood-up"; fi
+      else record "watcher $id" FAIL "${st:-unknown}" "CONTROL_BASE_URL=$BASE ./scripts/dogfood-up   (leave it running; workers report within ~30s)"; fi
     done
   else record "watchers status" FAIL "GET /api/watchers/status HTTP $CODE" "./scripts/dogfood-up"; fi
 else blocked "dogfood-up --check"; blocked "watchers status"; fi
@@ -134,8 +143,11 @@ else blocked "server sees claude"; blocked "verify job"; fi
 # ---- 6. Slack MCP + GitHub watcher dry-run ----
 hdr "6. Slack MCP + GitHub watcher"
 if (( CLAUDE_OK )); then
-  if claude mcp list 2>/dev/null | grep -qi slack; then record "Slack MCP" PASS "claude mcp list shows a Slack server"
-  else record "Slack MCP" FAIL "no Slack server in 'claude mcp list'" "add a Slack MCP server to Claude Code (claude mcp add ...), then run the loop in scripts/slack-watch.md (copy block below)"; SHOW_SLACK=1; fi
+  SLACK_FIX="claude plugin install slack@claude-plugins-official   (official Slack MCP, https://mcp.slack.com/mcp), then in a claude session run /mcp → slack → Authenticate (browser OAuth; needs you + workspace admin approval). Do NOT use bare 'claude mcp add --transport http slack https://mcp.slack.com/mcp' — it fails (no dynamic client registration)."
+  mcp=$(timeout 60 claude mcp list 2>/dev/null | grep -i slack || true)
+  if [[ -z "$mcp" ]]; then record "Slack MCP" FAIL "no Slack server in 'claude mcp list'" "$SLACK_FIX"; SHOW_SLACK=1
+  elif grep -qi "connected" <<<"$mcp" && ! grep -qiE "needs auth|failed" <<<"$mcp"; then record "Slack MCP" PASS "$(head -1 <<<"$mcp" | sed 's/:.*- / - /')"
+  else record "Slack MCP" FAIL "Slack MCP present but not connected: $(head -1 <<<"$mcp" | sed 's/.* - //')" "claude, then /mcp → slack → Authenticate (needs you in a browser)"; SHOW_SLACK=1; fi
 else record "Slack MCP" SKIP "blocked: claude CLI not ready (step 1)" "fix 'claude' in step 1, then add a Slack MCP server"; SHOW_SLACK=1; fi
 if [[ "${SHOW_SLACK:-0}" == 1 && -f scripts/slack-watch.md ]]; then
   echo "  --- copy-paste for your Slack-MCP agent (from scripts/slack-watch.md) ---"
@@ -143,8 +155,8 @@ if [[ "${SHOW_SLACK:-0}" == 1 && -f scripts/slack-watch.md ]]; then
 fi
 # github-watcher-tick.sh --dry-run: prints would-post, does not curl Control (no inbox POST, no status PUT).
 if (( UP )) && have gh && gh auth status >/dev/null 2>&1; then
-  if out=$(CONTROL_BASE_URL="$BASE" ./scripts/github-watcher-tick.sh --dry-run 2>&1); then record "github-watcher-tick --dry-run" PASS "$(echo "$out" | tail -1)"
-  else record "github-watcher-tick --dry-run" FAIL "$(echo "$out" | tail -1)" "open $BASE/get-live (repo), gh auth login, then ./scripts/github-watcher-tick.sh --dry-run"; fi
+  if out=$(timeout 120 ./scripts/github-watcher-tick.sh --dry-run 2>&1); then record "github-watcher-tick --dry-run" PASS "$(echo "$out" | tail -1)"
+  else record "github-watcher-tick --dry-run" FAIL "$(echo "$out" | grep -iE 'error|fail' | tail -2 | tr '\n' ' ')$(echo "$out" | tail -1)" "open $BASE/get-live (repo), gh auth login, then ./scripts/github-watcher-tick.sh --dry-run"; fi
 else record "github-watcher-tick --dry-run" SKIP "blocked: needs Control up + gh auth" "fix steps 1-2 first"; fi
 
 # ---- 7. Summary ----
