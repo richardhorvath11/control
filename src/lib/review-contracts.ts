@@ -18,7 +18,7 @@ export type ReviewBackend =
   | "fake"
   | "command";
 
-export type ReviewJobKind = "pr_review" | "slack_draft" | "verify";
+export type ReviewJobKind = "pr_review" | "slack_draft" | "verify" | "resume_next";
 
 export type ControlReviewJobV1 = {
   schema: typeof REVIEW_JOB_SCHEMA;
@@ -39,6 +39,10 @@ export type ControlReviewJobV1 = {
   message_ts?: string;
   permalink?: string;
   text_excerpt?: string;
+  /** resume_next: derived workstream key + activity hash (cache key) + grounded context for claude */
+  workstream_key?: string;
+  activity_hash?: string;
+  resume_context?: Record<string, unknown>;
 };
 
 export type ControlReviewFindingV1 = {
@@ -57,6 +61,8 @@ export type ControlReviewResultV1 = {
   draft_text?: string;
   scope?: { notes?: string };
   raw_path?: string;
+  /** resume_next: Claude "Next" line + worker-fetched PR context (gh). next is "" when unavailable. */
+  resume?: { next: string; why?: string; pr_context?: Record<string, unknown> };
 };
 
 export function isReviewBackend(v: unknown): v is ReviewBackend {
@@ -91,6 +97,7 @@ export function resolveReviewJobKind(raw: Record<string, unknown>): ReviewJobKin
   if (raw.kind === "verify" || raw.smoke === true) return "verify";
   if (raw.kind === "slack_draft") return "slack_draft";
   if (raw.kind === "pr_review") return "pr_review";
+  if (raw.kind === "resume_next") return "resume_next";
   // Infer: repo+pr → pr_review; channel_id → slack_draft
   const hasRepo = typeof raw.repo === "string" && raw.repo.trim();
   const pr =
@@ -132,6 +139,32 @@ export function validateReviewJob(raw: unknown): {
       job_id: o.job_id.trim(),
       kind: "verify",
     };
+    return { ok: true, job };
+  }
+
+  if (kind === "resume_next") {
+    if (typeof o.workstream_key !== "string" || !o.workstream_key.trim()) {
+      return { ok: false, error: "workstream_key required for resume_next" };
+    }
+    if (typeof o.activity_hash !== "string" || !o.activity_hash.trim()) {
+      return { ok: false, error: "activity_hash required for resume_next" };
+    }
+    if (!o.resume_context || typeof o.resume_context !== "object") {
+      return { ok: false, error: "resume_context required for resume_next" };
+    }
+    const job: ControlReviewJobV1 = {
+      schema: REVIEW_JOB_SCHEMA,
+      job_id: o.job_id.trim(),
+      kind: "resume_next",
+      workstream_key: o.workstream_key.trim(),
+      activity_hash: o.activity_hash.trim(),
+      resume_context: o.resume_context as Record<string, unknown>,
+    };
+    const prN = typeof o.pr === "number" ? o.pr : NaN;
+    if (typeof o.repo === "string" && o.repo.trim() && Number.isFinite(prN) && prN > 0) {
+      job.repo = o.repo.trim();
+      job.pr = Math.trunc(prN);
+    }
     return { ok: true, job };
   }
 
@@ -271,6 +304,18 @@ export function validateReviewResult(raw: unknown): {
   if (typeof o.raw_path === "string" && o.raw_path.trim()) {
     result.raw_path = o.raw_path.trim();
   }
+  if (o.resume && typeof o.resume === "object") {
+    const r = o.resume as Record<string, unknown>;
+    const pc = r.pr_context && typeof r.pr_context === "object" ? (r.pr_context as Record<string, unknown>) : undefined;
+    if (pc && JSON.stringify(pc).length > 300_000) {
+      return { ok: false, error: "resume.pr_context too large" };
+    }
+    result.resume = {
+      next: typeof r.next === "string" ? r.next.trim().slice(0, 600) : "",
+      why: typeof r.why === "string" ? r.why.trim().slice(0, 600) : undefined,
+      pr_context: pc,
+    };
+  }
   return { ok: true, result };
 }
 
@@ -399,6 +444,7 @@ export function buildReviewItemFromResult(opts: {
     findings,
     scopeFooter: scopeNotes,
     draftText: prCommentDraftFromResult(opts.result),
+    jobId: opts.result.job_id,
     status: "pending",
     agentId: opts.agentId,
     repo,
@@ -464,6 +510,7 @@ export function buildSlackDraftReviewItemFromResult(opts: {
     provenance: Array.isArray(opts.job.provenance)
       ? (opts.job.provenance as Provenance[])
       : undefined,
+    jobId: opts.result.job_id,
     status: "pending",
     agentId: opts.agentId,
   };

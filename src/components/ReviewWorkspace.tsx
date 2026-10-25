@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { recordResumeActivity, resumeKeyForReview } from "@/lib/resume-client";
 import { useControlStore } from "@/lib/store";
 import {
   repoPrFromReviewTitle,
@@ -146,6 +147,26 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
     };
   }, [item?.id, item?.kind, repoPr?.repo, repoPr?.pr]);
 
+  // Live Resume: opening a review / draft counts as the user's last action on that workstream.
+  useEffect(() => {
+    if (!item) return;
+    recordResumeActivity(
+      resumeKeyForReview(item),
+      "opened",
+      `Opened ${item.kind === "slack_draft" ? "draft reply" : "review"}: ${item.title}`,
+      { job_id: item.jobId }
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id]);
+
+  const recordDraftEdit = (text: string) => {
+    if (!item || text === (item.draftText ?? "")) return;
+    recordResumeActivity(resumeKeyForReview(item), "edited_draft", `Edited the ${item.kind === "slack_draft" ? "reply" : "PR comment"} draft`, {
+      draft: text,
+      job_id: item.jobId,
+    });
+  };
+
   useEffect(() => {
     setDraft(item?.draftText ?? "");
     setCommentDraft(item?.draftText ?? "");
@@ -284,6 +305,7 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                   className="btn-primary"
                   onClick={() => {
                     editReviewDraft(item.id, draft);
+                    recordDraftEdit(draft);
                     setEditing(false);
                   }}
                 >
@@ -630,6 +652,7 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                     disabled={githubQueuePending || item.status === "approved"}
                     value={commentDraft}
                     onChange={(e) => setCommentDraft(e.target.value)}
+                    onBlur={(e) => recordDraftEdit(e.target.value)}
                     placeholder="Draft a PR comment (markdown) — posts only after confirm"
                     aria-label="Draft GitHub comment"
                   />
@@ -732,6 +755,7 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                     disabled={githubQueuePending || item.status === "approved"}
                     value={commentDraft}
                     onChange={(e) => setCommentDraft(e.target.value)}
+                    onBlur={(e) => recordDraftEdit(e.target.value)}
                     placeholder="Draft a PR comment (markdown) — posts only after confirm"
                     aria-label="Draft GitHub comment"
                   />

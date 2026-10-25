@@ -58,8 +58,10 @@ import {
   buildSlackDraftReviewItemFromResult,
   interpretLiveReviewRunResponse,
   type ControlReviewResultV1,
+  type ControlReviewJobV1,
 } from "./review-contracts";
 import { SLACK_E2E } from "./slack-e2e";
+import { prResumeKey, recordResumeActivity, resumeKeyForReview, slackResumeKey } from "./resume-client";
 
 const initial = seed as SeedData;
 
@@ -73,7 +75,19 @@ let reviewWorkerEpoch = 0;
 /** Sync guard: auto-kick idempotency that cannot race Zustand persist. */
 const autoKickInFlight = new Set<string>();
 
+/** Live Focus started from the Resume card: the derived workstream + its pick-up context. */
+export interface LiveFocus {
+  key: string;
+  title: string;
+  url?: string;
+  next?: string;
+  open: string[];
+  leftOff?: string;
+  startedAt: string;
+}
+
 interface ControlState {
+  liveFocus: LiveFocus | null;
   clockLabel: string;
   mode: Mode;
   /** Demo (Monday seed) vs Live (apply durable inboxes). localStorage `control-v0-mode`. */
@@ -128,6 +142,13 @@ interface ControlState {
    */
   setSeedLiveMode: (mode: SeedLiveMode) => void;
   startFocus: (workstreamId?: string) => void;
+  /** Live: enter Focus with a Resume workstream's context loaded (no seeded ws fallback). */
+  focusResume: (f: Omit<LiveFocus, "startedAt">) => void;
+  /**
+   * Live: put a finished pr_review / slack_draft job's real result into Review (dedupe by jobId),
+   * select it and return its review id. Never approves or sends.
+   */
+  openReviewFromJob: (jobId: string) => Promise<string | null>;
   endFocus: () => void;
   setSelectedReview: (id: string | null) => void;
   setLauncherOpen: (open: boolean) => void;
@@ -251,6 +272,7 @@ export const useControlStore = create<ControlState>()(
       clockLabel: initial.clockLabel,
       mode: initial.mode,
       seedLiveMode: DEFAULT_SEED_LIVE_MODE,
+      liveFocus: null,
       focusWorkstreamId: initial.focusWorkstreamId,
       dayStrip: initial.dayStrip,
       workstreams: initial.workstreams as Workstream[],
@@ -353,6 +375,11 @@ export const useControlStore = create<ControlState>()(
       },
 
       startFocus: (workstreamId) => {
+        // Live: no seeded fallback — Focus without a Resume workstream shows its own empty copy.
+        if (!workstreamId && get().seedLiveMode === "live") {
+          set({ mode: "focus", focusWorkstreamId: null });
+          return;
+        }
         const ws =
           workstreamId ??
           get().focusWorkstreamId ??
@@ -362,8 +389,56 @@ export const useControlStore = create<ControlState>()(
         set({ mode: "focus", focusWorkstreamId: ws });
       },
 
+      focusResume: (f) => {
+        set({ mode: "focus", focusWorkstreamId: null, liveFocus: { ...f, startedAt: new Date().toISOString() } });
+      },
+
+      openReviewFromJob: async (jobId) => {
+        const existing = get().reviewQueue.find((r) => r.jobId === jobId);
+        if (existing) {
+          set({ selectedReviewId: existing.id });
+          return existing.id;
+        }
+        try {
+          const res = await fetch(`/api/review/jobs/${encodeURIComponent(jobId)}`);
+          if (!res.ok) return null;
+          const data = (await res.json()) as {
+            job?: ControlReviewJobV1;
+            status?: string;
+            result?: ControlReviewResultV1 | null;
+          };
+          const job = data.job;
+          const result = data.result;
+          if (!job || data.status !== "done" || !result || result.status !== "ok") return null;
+          const again = get().reviewQueue.find((r) => r.jobId === jobId);
+          if (again) {
+            set({ selectedReviewId: again.id });
+            return again.id;
+          }
+          const id = uid("rev");
+          let item: ReviewItem;
+          if (job.kind === "slack_draft") {
+            item = buildSlackDraftReviewItemFromResult({
+              id,
+              agentId: `resume-${jobId}`,
+              result,
+              job,
+              workspace: SLACK_E2E.workspace,
+            });
+          } else if (job.kind === "pr_review" && job.repo && job.pr) {
+            item = buildReviewItemFromResult({ id, findingIdPrefix: uid("f"), repo: job.repo, pr: job.pr, agentId: `resume-${jobId}`, result });
+          } else {
+            return null;
+          }
+          set({ reviewQueue: [...get().reviewQueue, item], selectedReviewId: id });
+          return id;
+        } catch {
+          return null;
+        }
+      },
+
       endFocus: () => {
-        set({ mode: "morning", focusWorkstreamId: null });
+        set({ mode: "morning", focusWorkstreamId: null, liveFocus: null });
         get().recomputeMode();
       },
 
@@ -784,6 +859,7 @@ export const useControlStore = create<ControlState>()(
           mode: initial.mode,
           seedLiveMode: "demo",
           focusWorkstreamId: initial.focusWorkstreamId,
+          liveFocus: null,
           dayStrip: initial.dayStrip,
           workstreams: initial.workstreams as Workstream[],
           attention: initial.attention as AttentionItem[],
@@ -816,6 +892,9 @@ export const useControlStore = create<ControlState>()(
         const pr = Math.trunc(args.pr);
         if (!repo || !Number.isFinite(pr) || pr <= 0) return;
 
+        if (args.source === "manual") {
+          recordResumeActivity(prResumeKey(repo, pr), "requested_review", `Requested a review of ${repo}#${pr}`);
+        }
         const coalesceKey = reviewAskCoalesceKey(repo, pr);
         const idemKey = autoReviewKeyFromRepoPr(repo, pr);
         const agentName = prReviewAgentName(repo, pr);
@@ -1153,6 +1232,9 @@ export const useControlStore = create<ControlState>()(
         if (!channelId || !messageTs) return;
 
         const threadTs = (args.threadTs ?? "").trim() || messageTs;
+        if (args.source === "manual") {
+          recordResumeActivity(slackResumeKey(channelId, threadTs), "requested_draft", `Asked for a draft reply in ${args.channelLabel?.trim() || channelId}`);
+        }
         const attentionId = args.attentionId;
         const channelLabel = args.channelLabel?.trim() || channelId;
         const idemKey = autoDraftIdempotencyKey(attentionId);
@@ -1750,6 +1832,7 @@ export const useControlStore = create<ControlState>()(
       applyApproveReview: (id) => {
         const item = get().reviewQueue.find((r) => r.id === id);
         if (!item || item.status !== "pending") return;
+        recordResumeActivity(resumeKeyForReview(item), "approved", `Approved ${item.kind === "slack_draft" ? "draft reply" : "review"}: ${item.title}`, { job_id: item.jobId });
 
         set({
           reviewQueue: get().reviewQueue.map((r) =>
@@ -1801,6 +1884,7 @@ export const useControlStore = create<ControlState>()(
 
       rejectReview: (id) => {
         const item = get().reviewQueue.find((r) => r.id === id);
+        if (item) recordResumeActivity(resumeKeyForReview(item), "rejected", `Dismissed ${item.kind === "slack_draft" ? "draft reply" : "review"}: ${item.title}`, { job_id: item.jobId });
         set({
           reviewQueue: get().reviewQueue.map((r) =>
             r.id === id ? { ...r, status: "rejected" } : r
@@ -2401,6 +2485,7 @@ export const useControlStore = create<ControlState>()(
       partialize: (state) => ({
         mode: state.mode,
         focusWorkstreamId: state.focusWorkstreamId,
+        liveFocus: state.liveFocus,
         workstreams: state.workstreams,
         attention: state.attention,
         // BUG-W4 3rd pass: do not persist agents / reviewQueue /

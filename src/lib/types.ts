@@ -144,6 +144,8 @@ export interface ReviewItem {
   githubQueueStatus?: "pending" | "posted" | "failed";
   status: "pending" | "queued" | "approved" | "rejected" | "edited";
   agentId?: string;
+  /** Review job that produced this item (Live) — dedupe when Resume re-opens it. */
+  jobId?: string;
 }
 
 export interface Agent {

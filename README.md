@@ -587,6 +587,7 @@ Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slac
 | Review runner smoke | `npx tsx scripts/smoke-review-runner.ts` |
 | Review worker smoke | `npx tsx scripts/smoke-review-worker.ts` |
 | PR review draft / no-tools smoke (hermetic) | `npx tsx scripts/smoke-pr-review-draft.ts` |
+| Live Resume selection / diff / Next job smoke (hermetic) | `npx tsx scripts/smoke-resume.ts` |
 | Multi-channel watch smoke | `npx tsx scripts/smoke-watch-multi-channel.ts` |
 | Review runner CLI | `./scripts/control-review-run --in job.json --out result.json` |
 | Local Pro worker CLI | `./scripts/control-review-worker --once` / `--watch` |

@@ -83,6 +83,7 @@ function resolveKind(raw) {
   if (raw.kind === "verify" || raw.smoke === true) return "verify";
   if (raw.kind === "slack_draft") return "slack_draft";
   if (raw.kind === "pr_review") return "pr_review";
+  if (raw.kind === "resume_next") return "resume_next";
   if (typeof raw.channel_id === "string" && raw.channel_id.trim()) {
     const hasRepo = typeof raw.repo === "string" && raw.repo.trim();
     const pr =
@@ -112,6 +113,28 @@ function validateJob(raw) {
         schema: REVIEW_JOB_SCHEMA,
         job_id: raw.job_id.trim(),
         kind: "verify",
+      },
+    };
+  }
+  if (kind === "resume_next") {
+    if (typeof raw.workstream_key !== "string" || !raw.workstream_key.trim()) {
+      return { ok: false, error: "workstream_key required for resume_next" };
+    }
+    if (!raw.resume_context || typeof raw.resume_context !== "object") {
+      return { ok: false, error: "resume_context required for resume_next" };
+    }
+    const prN = typeof raw.pr === "number" ? raw.pr : NaN;
+    return {
+      ok: true,
+      job: {
+        schema: REVIEW_JOB_SCHEMA,
+        job_id: raw.job_id.trim(),
+        kind: "resume_next",
+        workstream_key: raw.workstream_key.trim(),
+        activity_hash: typeof raw.activity_hash === "string" ? raw.activity_hash : "",
+        repo: typeof raw.repo === "string" && raw.repo.trim() ? raw.repo.trim() : undefined,
+        pr: Number.isFinite(prN) && prN > 0 ? Math.trunc(prN) : undefined,
+        resume_context: raw.resume_context,
       },
     };
   }
@@ -384,6 +407,151 @@ function buildGluePrompt(job, ctx) {
   ].join("\n");
 }
 
+// ---------- resume_next ----------
+/** "path/to/file.ext:123" (also "file.ext:123-130", "file.ext L123") from finding evidence. */
+export function parseLocations(strings) {
+  const out = [];
+  const seen = new Set();
+  for (const s of strings || []) {
+    const re = /([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)(?::| L| line )(\d+)/g;
+    let m;
+    while ((m = re.exec(String(s)))) {
+      const k = `${m[1]}:${m[2]}`;
+      if (!seen.has(k)) { seen.add(k); out.push({ file: m[1], line: Number(m[2]), raw: String(s) }); }
+    }
+  }
+  return out;
+}
+
+/** Deterministic hunk excerpts (new-file line numbers ±radius) from a unified diff. */
+export function extractHunks(diff, locs, { radius = 6, max = 6 } = {}) {
+  const files = new Map(); // path -> [{header, lines:[{n, text}]}]
+  let cur = null, hunk = null, n = 0;
+  for (const line of String(diff || "").split("\n")) {
+    if (line.startsWith("diff --git ")) { cur = null; hunk = null; continue; }
+    if (line.startsWith("+++ ")) {
+      const p = line.slice(4).replace(/^b\//, "");
+      cur = []; files.set(p, cur); continue;
+    }
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (h && cur) { n = Number(h[1]); hunk = { header: line, lines: [] }; cur.push(hunk); continue; }
+    if (!hunk || line.startsWith("--- ")) continue;
+    if (line.startsWith("-")) { hunk.lines.push({ n: null, text: line }); continue; }
+    if (line.startsWith("\\")) continue;
+    hunk.lines.push({ n, text: line }); n++;
+  }
+  const out = [];
+  for (const loc of locs) {
+    if (out.length >= max) break;
+    let key = [...files.keys()].find((k) => k === loc.file) || [...files.keys()].find((k) => k.endsWith("/" + loc.file) || loc.file.endsWith("/" + k));
+    if (!key) continue;
+    for (const hk of files.get(key)) {
+      const idx = hk.lines.findIndex((l) => l.n === loc.line);
+      if (idx < 0) continue;
+      const lo = Math.max(0, idx - radius), hi = Math.min(hk.lines.length, idx + radius + 1);
+      out.push({
+        file: key,
+        line: loc.line,
+        finding: loc.finding,
+        header: hk.header,
+        text: hk.lines.slice(lo, hi).map((l) => `${l.n == null ? "    " : String(l.n).padStart(4)} ${l.text}`).join("\n"),
+      });
+      break;
+    }
+  }
+  return out;
+}
+
+function fetchResumePrContext(job) {
+  const repo = normalizeRepo(job.repo);
+  const pr = String(job.pr);
+  const gh = (args) =>
+    spawnSync("gh", args, { encoding: "utf8", cwd: ROOT, maxBuffer: 64 * 1024 * 1024, timeout: 60_000 });
+  const view = gh(["pr", "view", pr, "--repo", repo, "--json",
+    "number,title,url,state,isDraft,reviewDecision,reviewRequests,latestReviews,comments,statusCheckRollup,headRefOid"]);
+  if (view.status !== 0) return { error: `gh pr view failed: ${(view.stderr || view.error?.message || "").trim().slice(0, 300)}` };
+  let meta;
+  try { meta = JSON.parse(view.stdout); } catch { return { error: "gh pr view returned invalid JSON" }; }
+  const clip = (t, n) => { const x = String(t || "").replace(/\s+/g, " ").trim(); return x.length > n ? x.slice(0, n - 1) + "…" : x; };
+  const pc = {
+    state: meta.isDraft ? "DRAFT" : meta.state,
+    review_decision: meta.reviewDecision || "",
+    head_sha: meta.headRefOid,
+    review_requests: (meta.reviewRequests || []).map((r) => r.login || r.name || r.slug).filter(Boolean),
+    checks: (meta.statusCheckRollup || []).slice(0, 20).map((c) => ({
+      name: c.name || c.context || "check",
+      state: c.conclusion || c.state || c.status || "",
+      url: c.detailsUrl || c.targetUrl || "",
+    })),
+    comments: (meta.comments || []).slice(-8).map((c) => ({ author: c.author?.login || "?", created_at: c.createdAt, body: clip(c.body, 500), url: c.url })),
+    reviews: (meta.latestReviews || []).slice(-8).map((r) => ({ author: r.author?.login || "?", submitted_at: r.submittedAt, state: r.state, body: clip(r.body, 400) })),
+    hunks: [],
+    fetched_at: new Date().toISOString(),
+  };
+  // Hunks for review finding locations (deterministic; no model involved).
+  const findings = job.resume_context?.context?.left_off?.latest_review?.findings || [];
+  const locs = [];
+  for (const f of findings) for (const l of parseLocations([...(f.evidence || []), f.body || ""])) locs.push({ ...l, finding: f.title });
+  if (locs.length) {
+    const diff = gh(["pr", "diff", pr, "--repo", repo]);
+    if (diff.status === 0) pc.hunks = extractHunks(diff.stdout, locs);
+    else pc.hunks_error = `gh pr diff failed: ${(diff.stderr || "").trim().slice(0, 200)}`;
+  }
+  return { pc };
+}
+
+function buildResumePrompt(job, pc) {
+  return [
+    "You are helping a developer resume work. Using ONLY the JSON data below, write the single most useful next step.",
+    "Rules: do not invent facts, people, files or status not present in the data. No tools. Be concrete (name the PR/thread, file or finding).",
+    "Never suggest posting/approving on the user's behalf as done; say what THEY should do next. Max 30 words for next.",
+    'Reply with exactly one JSON object and nothing else: {"next":"…","why":"one short sentence citing the data"}',
+    "",
+    "DATA:",
+    JSON.stringify({ ...job.resume_context, pr_live: pc || null }, null, 1).slice(0, 60_000),
+  ].join("\n");
+}
+
+async function runResumeNext(job) {
+  const base = (status, summary, resume) => ({
+    schema: REVIEW_RESULT_SCHEMA, job_id: job.job_id, status, summary, findings: [], resume,
+  });
+  let pc;
+  if (job.repo && job.pr) {
+    const r = fetchResumePrContext(job);
+    pc = r.pc || { error: r.error, fetched_at: new Date().toISOString() };
+  }
+  const claudeBin = process.env.CONTROL_REVIEW_WORKER_CLAUDE || "claude";
+  if (!claudeAvailable(claudeBin)) {
+    return base("error", "Next unavailable — claude CLI not found on PATH", { next: "", pr_context: pc });
+  }
+  const env = { ...process.env };
+  delete env.ANTHROPIC_API_KEY;
+  const NO_TOOLS = ["-p", "--tools", "", "--permission-prompts", "none", "--strict-mcp-config"];
+  const once = () => new Promise((resolve) => {
+    let stdout = "", stderr = "";
+    const child = spawn("env", ["-u", "ANTHROPIC_API_KEY", claudeBin, ...NO_TOOLS], { env, cwd: ROOT });
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(buildResumePrompt(job, pc));
+    const killer = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* */ } }, 180_000);
+    child.stdout?.on("data", (d) => { stdout += d; });
+    child.stderr?.on("data", (d) => { stderr += d; });
+    child.on("error", (e) => { clearTimeout(killer); resolve({ err: e.message }); });
+    child.on("close", (status) => {
+      clearTimeout(killer);
+      if (looksLikeAuthFail(stdout, stderr, status)) return resolve({ err: "Claude not logged in (claude login / setup-token)" });
+      const o = extractJsonObject(stdout);
+      const next = o && typeof o.next === "string" ? o.next.trim() : "";
+      if (!next) return resolve({ err: `could not parse claude output (exit ${status})` });
+      resolve({ next, why: typeof o.why === "string" ? o.why.trim() : "" });
+    });
+  });
+  let r = await once();
+  if (r.err && !/not logged in/.test(r.err)) r = await once();
+  if (r.err) return base("error", `Next unavailable — ${r.err}`, { next: "", pr_context: pc });
+  return base("ok", r.next, { next: r.next, why: r.why, pr_context: pc });
+}
+
 function runClaudeOnce(job, ctx) {
   const claudeBin = process.env.CONTROL_REVIEW_WORKER_CLAUDE || "claude";
   if (!claudeAvailable(claudeBin)) {
@@ -610,7 +778,9 @@ async function processOne() {
   }
   const job = v.job;
   console.log(
-    job.kind === "verify"
+    job.kind === "resume_next"
+      ? `claimed ${job.job_id} · resume_next ${job.workstream_key}`
+      : job.kind === "verify"
       ? `claimed ${job.job_id} · verify (claude smoke)`
       : job.kind === "slack_draft"
         ? `claimed ${job.job_id} · slack_draft ${job.channel_id} ${job.message_ts}`
@@ -624,6 +794,24 @@ async function processOne() {
         ? `claimed slack_draft ${job.job_id}`
         : `claimed ${normalizeRepo(job.repo)}#${job.pr}`
   );
+
+  if (job.kind === "resume_next") {
+    const stop = heartbeatLoop(job.job_id);
+    let result;
+    try {
+      result = await runResumeNext(job);
+    } finally {
+      stop();
+    }
+    try {
+      await postResult(job.job_id, result);
+    } catch (e) {
+      console.error("result POST failed:", e instanceof Error ? e.message : e);
+      return { exitCode: 2 };
+    }
+    console.log(`posted resume_next ${job.job_id} status=${result.status}`);
+    return { exitCode: 0 };
+  }
 
   const stopBeat = heartbeatLoop(job.job_id);
   let run;
@@ -739,7 +927,17 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(2);
-});
+// Run only when executed directly (smokes import parseLocations/extractHunks).
+const invokedDirectly = (() => {
+  try {
+    return fs.realpathSync(process.argv[1] || "") === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(2);
+  });
+}

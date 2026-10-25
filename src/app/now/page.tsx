@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useControlStore } from "@/lib/store";
 import type { AttentionItem, Provenance } from "@/lib/types";
+import { LiveResumeCard } from "@/components/LiveResume";
 
 export default function NowPage() {
   const mode = useControlStore((s) => s.mode);
@@ -170,7 +171,9 @@ function MorningNow() {
     [attention]
   );
 
-  const resume = workstreams.find((w) => w.id === "ws-cred") ?? workstreams[0];
+  // Demo keeps the seeded workstream card; Live derives Resume from real data (LiveResumeCard).
+  const live = useControlStore((s) => s.seedLiveMode) === "live";
+  const resume = live ? undefined : workstreams.find((w) => w.id === "ws-cred") ?? workstreams[0];
 
   return (
     <div className="mx-auto max-w-4xl px-8 py-8 space-y-6">
@@ -185,6 +188,8 @@ function MorningNow() {
       </header>
 
       <DayStrip />
+
+      {live && <LiveResumeCard />}
 
       {resume && (
         <section className="rounded-xl border border-amber/40 bg-surface p-5 shadow-[inset_3px_0_0_0_#E8A54B]">
@@ -431,21 +436,49 @@ function FocusNow() {
     [reviewQueue]
   );
   const endFocus = useControlStore((s) => s.endFocus);
-  const ws =
-    workstreams.find((w) => w.id === focusId) ??
-    workstreams.find((w) => w.id === "ws-cred");
+  const live = useControlStore((s) => s.seedLiveMode) === "live";
+  const liveFocus = useControlStore((s) => s.liveFocus);
+  const ws = live
+    ? undefined
+    : workstreams.find((w) => w.id === focusId) ??
+      workstreams.find((w) => w.id === "ws-cred");
 
   return (
     <div className="mx-auto max-w-2xl px-8 py-24 space-y-8">
       <div className="text-[12px] text-muted uppercase tracking-wide">Focus</div>
-      <div>
-        <h1 className="text-[20px] font-semibold leading-7">
-          {ws?.name ?? "Focus"}
-        </h1>
-        <p className="mt-3 text-[16px] leading-6 text-text/90">
-          Next: {ws?.next}
-        </p>
-      </div>
+      {live ? (
+        <div data-testid="live-focus">
+          <h1 className="text-[20px] font-semibold leading-7">
+            {liveFocus?.url ? (
+              <a href={liveFocus.url} target="_blank" rel="noopener noreferrer" className="hover:underline">
+                {liveFocus.title}
+              </a>
+            ) : (
+              liveFocus?.title ?? "Focus"
+            )}
+          </h1>
+          <p className="mt-3 text-[16px] leading-6 text-text/90">
+            {liveFocus?.next ? `Next: ${liveFocus.next}` : liveFocus ? "Next unavailable — no Claude Next for this workstream yet." : "No Live workstream loaded. Use Resume on Now."}
+          </p>
+          {liveFocus?.leftOff ? <p className="mt-2 text-[13px] text-muted">Left off: {liveFocus.leftOff}</p> : null}
+          {liveFocus?.open.length ? (
+            <ul className="mt-2 text-[13px] text-muted space-y-0.5">
+              {liveFocus.open.map((o) => (
+                <li key={o}>· {o}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : (
+        <div>
+          <h1 className="text-[20px] font-semibold leading-7">
+            {ws?.name ?? "Focus"}
+          </h1>
+          <p className="mt-3 text-[16px] leading-6 text-text/90">
+            Next: {ws?.next}
+          </p>
+        </div>
+      )}
       <div className="space-y-2">
         <p className="text-[13px] text-muted">
           {running} agents working · {needs} need you
@@ -483,7 +516,8 @@ function FocusNow() {
 function ClearNow() {
   const workstreams = useControlStore((s) => s.workstreams);
   const dayStrip = useControlStore((s) => s.dayStrip);
-  const resume = workstreams.find((w) => w.id === "ws-cred");
+  const live = useControlStore((s) => s.seedLiveMode) === "live";
+  const resume = live ? undefined : workstreams.find((w) => w.id === "ws-cred");
   const nextMeeting = dayStrip.meetings.find((m) => m.time === "2:00");
 
   return (
@@ -502,6 +536,7 @@ function ClearNow() {
         )}
         <FocusToggleButton />
       </div>
+      {live && <LiveResumeCard />}
     </div>
   );
 }
