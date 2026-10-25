@@ -197,7 +197,10 @@ function validateResult(raw) {
       return { ok: false, error: `findings[${i}] needs title+body` };
     }
   }
-  // draft_text optional (slack_draft); pass through when present
+  // draft_text optional (slack_draft; pr_review comment draft); pass through when present
+  if (raw.draft_text !== undefined && typeof raw.draft_text !== "string") {
+    return { ok: false, error: "draft_text must be a string" };
+  }
   return { ok: true, result: raw };
 }
 
@@ -357,8 +360,11 @@ function buildGluePrompt(job, ctx) {
   return [
     "You are a thin PR review invoke glue for Control (not a product skill/plugin).",
     "Read the job JSON below and reply with ONLY one JSON object matching schema control.review_result.v1:",
-    '{ "schema":"control.review_result.v1", "job_id", "status":"ok"|"error", "summary", "findings":[{"title","body","evidence":[]}], "scope":{"notes":"…"} }',
+    '{ "schema":"control.review_result.v1", "job_id", "status":"ok"|"error", "summary", "findings":[{"title","body","evidence":[]}], "draft_text":"…", "scope":{"notes":"…"} }',
     "Findings are analysis claims with evidence — not approval. Keep findings short.",
+    "draft_text: a concise GitHub PR comment (markdown) the human may post after editing. One short intro line, then one bullet per finding:",
+    "  **<finding title>** (`file:line` from that finding's evidence) — one sentence on the issue and the suggested fix.",
+    "  Only restate your findings; add nothing that is not in them. No approval language, no sign-off. If findings is [], draft_text must be \"\".",
     "The PR metadata and unified diff are included below (fetched by the worker via gh).",
     "Do NOT run any tools or commands; review only the diff below. Cite file:line in evidence.",
     "If the diff is insufficient to review, return status \"error\" with a summary saying why. Never invent findings.",
@@ -392,9 +398,12 @@ function runClaudeOnce(job, ctx) {
     const useEnvU = process.platform !== "win32";
     const cmd = useEnvU ? "env" : claudeBin;
     // Prompt goes over stdin: a PR diff can exceed Linux's 128 KiB per-argument limit.
+    // Review/draft get everything they need in the prompt (worker pre-fetches the gh diff), so
+    // disable ALL tools and auto-deny prompts: a headless permission prompt can never block a job.
+    const NO_TOOLS = ["-p", "--tools", "", "--permission-prompts", "none", "--strict-mcp-config"];
     const spawnArgs = useEnvU
-      ? ["-u", "ANTHROPIC_API_KEY", claudeBin, "-p"]
-      : ["-p"];
+      ? ["-u", "ANTHROPIC_API_KEY", claudeBin, ...NO_TOOLS]
+      : NO_TOOLS;
     let stdout = "";
     let stderr = "";
     const child = spawn(cmd, spawnArgs, {

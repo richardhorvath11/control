@@ -620,8 +620,13 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                       </a>
                     </div>
                   ) : null}
+                  {!commentDraft.trim() && item.findings.length === 0 && !githubQueuePending && item.status !== "approved" ? (
+                    <div className="rounded-lg border border-border bg-raised px-3 py-2 text-[12px] leading-5 text-muted">
+                      No findings, so there's no comment to draft. You can write one yourself; nothing posts without your confirm.
+                    </div>
+                  ) : null}
                   <textarea
-                    className="w-full min-h-[96px] rounded-lg border border-border bg-bg p-3 text-[13px] leading-5 outline-none focus:border-review disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="w-full min-h-[160px] rounded-lg border border-border bg-bg p-3 text-[13px] leading-5 outline-none focus:border-review disabled:opacity-60 disabled:cursor-not-allowed"
                     disabled={githubQueuePending || item.status === "approved"}
                     value={commentDraft}
                     onChange={(e) => setCommentDraft(e.target.value)}
@@ -717,8 +722,13 @@ export function ReviewWorkspace({ itemId }: { itemId: string }) {
                       </a>
                     </div>
                   ) : null}
+                  {!commentDraft.trim() && item.findings.length === 0 && !githubQueuePending && item.status !== "approved" ? (
+                    <div className="rounded-lg border border-border bg-raised px-3 py-2 text-[12px] leading-5 text-muted">
+                      No findings, so there's no comment to draft. You can write one yourself; nothing posts without your confirm.
+                    </div>
+                  ) : null}
                   <textarea
-                    className="w-full min-h-[96px] rounded-lg border border-border bg-bg p-3 text-[13px] leading-5 outline-none focus:border-review disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="w-full min-h-[160px] rounded-lg border border-border bg-bg p-3 text-[13px] leading-5 outline-none focus:border-review disabled:opacity-60 disabled:cursor-not-allowed"
                     disabled={githubQueuePending || item.status === "approved"}
                     value={commentDraft}
                     onChange={(e) => setCommentDraft(e.target.value)}

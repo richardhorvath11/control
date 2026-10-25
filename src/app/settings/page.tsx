@@ -135,9 +135,9 @@ export default function SettingsPage() {
           Config shape is <code className="text-text">slackWatch</code> only.
           Legacy <code className="text-text">slackPrChannels</code> / scalars
           one-shot migrate on load (old keys deleted).{" "}
-          <code className="text-text">prLinks:false</code> surfaces accept{" "}
-          <code className="text-text">message</code> events but ignore{" "}
-          <code className="text-text">pr_link</code> routing.
+With &quot;Treat PR links posted here as review requests&quot; off
+          (<code className="text-text">prLinks:false</code>), a channel&apos;s messages are
+          still watched, but PR links in it don&apos;t create Review asks.
         </p>
         <p>
           Or edit{" "}

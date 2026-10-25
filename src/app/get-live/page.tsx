@@ -97,10 +97,16 @@ export default function GetLivePage() {
             Point Control at your repo and Slack
           </h1>
           <p className="text-[13px] text-muted mt-2 leading-5">
-            Reviews use <strong className="text-text">Claude CLI + Pro</strong> — no API keys.
-            Point at your repo and Slack, then Continue → Live. Worker launch and
-            Claude verify are next.
+            Control <strong className="text-text">watches</strong> one GitHub repo plus
+            the Slack channels, DMs and group DMs you choose. What it finds becomes
+            items in <strong className="text-text">Needs-you</strong> and{" "}
+            <strong className="text-text">Review</strong>.
           </p>
+          <ul className="text-[12px] text-muted mt-2 leading-5 list-disc pl-5" data-testid="get-live-promises">
+            <li>Control never posts notifications to Slack.</li>
+            <li>Any reply or PR comment is a draft. Nothing goes out until you approve it.</li>
+            <li>Reviews run on your Claude CLI login (Pro). No API keys needed.</li>
+          </ul>
         </div>
 
         {loading ? (

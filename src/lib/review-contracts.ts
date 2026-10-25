@@ -347,6 +347,27 @@ export function mapResultFindingsToFindings(
   }));
 }
 
+/**
+ * PR review → Draft comment text. Prefer the worker's draft_text (same claude -p call as the
+ * findings). If absent, derive deterministically from the findings only (title + first evidence
+ * quote + body). No findings → "" so the UI shows an explicit empty state. Never invents text.
+ */
+export function prCommentDraftFromResult(result: ControlReviewResultV1): string {
+  const fromClaude = typeof result.draft_text === "string" ? result.draft_text.trim() : "";
+  if (fromClaude) return fromClaude;
+  const fs = Array.isArray(result.findings) ? result.findings : [];
+  if (fs.length === 0) return "";
+  const lines = ["Review notes (analysis, not an approval):", ""];
+  for (const f of fs) {
+    const ev = Array.isArray(f.evidence) ? f.evidence : [];
+    const first = ev.find((e) => typeof e === "string" && e.trim()) as string | undefined;
+    const cite = first ? ` (\`${first.trim().split(/\s+/)[0]}\`)` : "";
+    const body = (f.body || "").trim().split(/(?<=[.!?])\s/)[0];
+    lines.push(`- **${f.title.trim()}**${cite}${body ? ` — ${body}` : ""}`);
+  }
+  return lines.join("\n");
+}
+
 export function buildReviewItemFromResult(opts: {
   id: string;
   findingIdPrefix?: string;
@@ -377,6 +398,7 @@ export function buildReviewItemFromResult(opts: {
       "Second-pass review (auto or delegated). Findings are claims with evidence — not an approval.",
     findings,
     scopeFooter: scopeNotes,
+    draftText: prCommentDraftFromResult(opts.result),
     status: "pending",
     agentId: opts.agentId,
     repo,

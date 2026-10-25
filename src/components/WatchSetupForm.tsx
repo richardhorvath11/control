@@ -167,7 +167,10 @@ export function WatchSetupForm({ values, onChange, compact, disabled }: Props) {
     <div className="space-y-4">
       <label className="block space-y-1">
         <span className="text-[11px] uppercase tracking-wide text-muted">
-          GitHub repo (owner/name) *
+          GitHub repo to watch (owner/name) *
+        </span>
+        <span className="block text-[11px] text-muted leading-4">
+          One repo. Review requests and PR activity here become items in Needs-you.
         </span>
         <input
           className="w-full rounded-lg border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-running/50"
@@ -224,7 +227,7 @@ export function WatchSetupForm({ values, onChange, compact, disabled }: Props) {
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-[11px] uppercase tracking-wide text-muted">
-            Slack surfaces
+            Slack channels to watch
           </span>
           <button
             type="button"
@@ -235,6 +238,10 @@ export function WatchSetupForm({ values, onChange, compact, disabled }: Props) {
             Add
           </button>
         </div>
+        <p className="text-[11px] text-muted leading-4">
+          Paste a channel ID (C…), or a DM (D…) / group DM ID, plus a display name.
+          Control only reads these; it never posts to them.
+        </p>
         {values.surfaces.map((ch, i) => (
           <div key={i} className="flex flex-wrap gap-2 items-center">
             <input
@@ -264,16 +271,20 @@ export function WatchSetupForm({ values, onChange, compact, disabled }: Props) {
               <option value="im">im</option>
               <option value="mpim">mpim</option>
             </select>
-            <label className="flex items-center gap-1 text-[12px] text-muted whitespace-nowrap">
+            <label
+              className="flex items-center gap-1 text-[12px] text-muted"
+              title="When on, a message here linking a pull request in the watched repo becomes a Review ask in Needs-you (one per PR). Links to other repos are ignored. When off, those messages are handled like any other message."
+            >
               <input
                 type="checkbox"
+                data-testid={`watch-surface-prlinks-${i}`}
                 checked={ch.prLinks}
                 onChange={(e) =>
                   updateSurface(i, { prLinks: e.target.checked })
                 }
                 disabled={disabled}
               />
-              prLinks
+              Treat PR links posted here as review requests
             </label>
             <button
               type="button"
@@ -297,7 +308,7 @@ export function WatchSetupForm({ values, onChange, compact, disabled }: Props) {
             disabled={disabled}
             data-testid="watch-include-dms"
           />
-          DMs
+          My DMs
         </label>
         <label className="flex items-center gap-2 text-[13px]">
           <input
@@ -307,12 +318,21 @@ export function WatchSetupForm({ values, onChange, compact, disabled }: Props) {
             disabled={disabled}
             data-testid="watch-include-mpims"
           />
-          MPIMs
+          My group DMs
         </label>
       </div>
+      <p className="text-[11px] text-muted leading-4 -mt-1">
+        Watches every DM / group DM you&apos;re in. Messages to you show up in Needs-you;
+        any reply is a draft you approve.
+      </p>
       <label className="block space-y-1">
         <span className="text-[11px] uppercase tracking-wide text-muted">
-          myUserId (required if DMs or MPIMs checked)
+          Your Slack member ID (needed for DMs / group DMs)
+        </span>
+        <span className="block text-[11px] text-muted leading-4">
+          Tells Control which Slack user is you, so it can find your DMs and spot
+          @-mentions of you. Without it, DM and group-DM watching stays off. To find it:
+          in Slack, open your profile → ⋮ (More) → Copy member ID. Looks like U01ABC23DEF.
         </span>
         <input
           className="w-full rounded-lg border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-running/50 font-mono"
