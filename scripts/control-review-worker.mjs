@@ -307,7 +307,32 @@ function heartbeatLoop(jobId) {
   return () => clearInterval(id);
 }
 
-function buildGluePrompt(job) {
+/**
+ * PR review context fetched by the worker itself via local `gh` (read-only), so headless
+ * `claude -p` never needs Bash/gh tool permission (it would block on the approval prompt).
+ * Fail closed: no diff → job fails; never review from metadata alone.
+ */
+const PR_DIFF_MAX = Number(process.env.CONTROL_REVIEW_DIFF_MAX || 200_000);
+function fetchPrContext(job) {
+  const repo = normalizeRepo(job.repo);
+  const pr = String(job.pr ?? "").trim();
+  if (!repo || !/^\d+$/.test(pr)) return { error: `bad PR locator ${repo}#${pr}` };
+  const gh = (args) =>
+    spawnSync("gh", args, { encoding: "utf8", cwd: ROOT, maxBuffer: 64 * 1024 * 1024, timeout: 60_000 });
+  const view = gh(["pr", "view", pr, "--repo", repo, "--json",
+    "number,title,body,author,baseRefName,headRefName,headRefOid,additions,deletions,changedFiles,files"]);
+  if (view.status !== 0) return { error: `gh pr view failed: ${(view.stderr || view.error?.message || "").trim().slice(0, 300)}` };
+  const diff = gh(["pr", "diff", pr, "--repo", repo]);
+  if (diff.status !== 0) return { error: `gh pr diff failed: ${(diff.stderr || diff.error?.message || "").trim().slice(0, 300)}` };
+  const full = diff.stdout || "";
+  if (!full.trim()) return { error: "gh pr diff returned an empty diff" };
+  let meta;
+  try { meta = JSON.parse(view.stdout); } catch { return { error: "gh pr view returned invalid JSON" }; }
+  const truncated = full.length > PR_DIFF_MAX;
+  return { meta, diff: truncated ? full.slice(0, PR_DIFF_MAX) : full, truncated, diffBytes: full.length };
+}
+
+function buildGluePrompt(job, ctx) {
   if (job.kind === "verify") {
     return [
       "You are proving Claude CLI + Pro can serve Control's Gastown review worker.",
@@ -334,34 +359,50 @@ function buildGluePrompt(job) {
     "Read the job JSON below and reply with ONLY one JSON object matching schema control.review_result.v1:",
     '{ "schema":"control.review_result.v1", "job_id", "status":"ok"|"error", "summary", "findings":[{"title","body","evidence":[]}], "scope":{"notes":"…"} }',
     "Findings are analysis claims with evidence — not approval. Keep findings short.",
+    "The PR metadata and unified diff are included below (fetched by the worker via gh).",
+    "Do NOT run any tools or commands; review only the diff below. Cite file:line in evidence.",
+    "If the diff is insufficient to review, return status \"error\" with a summary saying why. Never invent findings.",
     `Target: ${locator}`,
     "Job JSON:",
     JSON.stringify(job),
+    ...(ctx
+      ? [
+          "PR metadata (gh pr view):",
+          JSON.stringify(ctx.meta),
+          `Unified diff (gh pr diff, ${ctx.diffBytes} bytes${ctx.truncated ? `, TRUNCATED to first ${PR_DIFF_MAX} bytes — say so in scope.notes` : ""}):`,
+          "```diff",
+          ctx.diff,
+          "```",
+        ]
+      : []),
   ].join("\n");
 }
 
-function runClaudeOnce(job) {
+function runClaudeOnce(job, ctx) {
   const claudeBin = process.env.CONTROL_REVIEW_WORKER_CLAUDE || "claude";
   if (!claudeAvailable(claudeBin)) {
     return Promise.resolve({ missing: true });
   }
 
-  const glue = buildGluePrompt(job);
+  const glue = buildGluePrompt(job, ctx);
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
 
   return new Promise((resolve) => {
     const useEnvU = process.platform !== "win32";
     const cmd = useEnvU ? "env" : claudeBin;
+    // Prompt goes over stdin: a PR diff can exceed Linux's 128 KiB per-argument limit.
     const spawnArgs = useEnvU
-      ? ["-u", "ANTHROPIC_API_KEY", claudeBin, "-p", glue]
-      : ["-p", glue];
+      ? ["-u", "ANTHROPIC_API_KEY", claudeBin, "-p"]
+      : ["-p"];
     let stdout = "";
     let stderr = "";
     const child = spawn(cmd, spawnArgs, {
       env,
       cwd: ROOT,
     });
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(glue);
     const killer = setTimeout(() => {
       try {
         child.kill("SIGKILL");
@@ -402,11 +443,16 @@ function runClaudeOnce(job) {
 }
 
 async function runClaude(job) {
-  let attempt = await runClaudeOnce(job);
+  let ctx;
+  if (job.kind !== "slack_draft") {
+    ctx = fetchPrContext(job);
+    if (ctx.error) return { ok: false, ghError: ctx.error };
+  }
+  let attempt = await runClaudeOnce(job, ctx);
   if (attempt.missing) return attempt;
   if (!attempt.ok) {
     console.error("claude parse fail; retrying once…", attempt.error || "");
-    attempt = await runClaudeOnce(job);
+    attempt = await runClaudeOnce(job, ctx);
   }
   return attempt;
 }
@@ -589,7 +635,9 @@ async function processOne() {
     return { exitCode: 4 };
   }
   if (!run.ok) {
-    const failMsg = run.auth
+    const failMsg = run.ghError
+      ? `Agent Failed — could not fetch PR diff via gh (${run.ghError})`
+      : run.auth
       ? "Agent Failed — Claude not logged in (claude login / setup-token)"
       : `Agent Failed — could not parse claude output (${run.error || "invalid JSON"})`;
     try {

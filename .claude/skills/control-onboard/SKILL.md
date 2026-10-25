@@ -10,6 +10,8 @@ Goal: get the user to "you're live" with Control, or to an exact, short list of 
 ## How to run
 
 1. From the repo root, run `./scripts/control-doctor` (add `--json` if you want to parse results).
+   It takes ~10–20s because step 5 runs a real `claude -p` verify job; `--fast` (= `--no-verify`) skips
+   that and takes ~5s. Use the full run for the final check.
    `CONTROL_BASE_URL` defaults to `http://localhost:3000`; shorthand like `:3000` is normalized.
    The doctor prepends `~/.local/bin` (Claude Code's install dir) to PATH. The **dev server and
    `./scripts/dogfood-up` must also be started with that PATH**, or "server sees claude" fails and the
@@ -41,6 +43,13 @@ Goal: get the user to "you're live" with Control, or to an exact, short list of 
    `scripts/slack-watch.md`. Plus `./scripts/github-watcher-tick.sh --dry-run` (existing mode: prints
    would-post, does not curl Control at all — no inbox POST, no status PUT).
 7. **Summary** — table ending in "you're live" or "fix these N". Exit code is nonzero when anything fails.
+
+## Notes
+
+- The doctor never reads stdin (`exec </dev/null`), so it behaves the same in a terminal, a pty, CI, or `claude -p`.
+- Live PR reviews: the review-worker fetches `gh pr view`/`gh pr diff` itself and passes the diff to
+  `claude -p`, so headless Claude never needs Bash permission. If gh can't fetch the diff, the job fails
+  closed ("could not fetch PR diff via gh"). There's no fake review. Review page → **Review PR #N** kicks the primary PR.
 
 ## If the doctor itself won't run
 

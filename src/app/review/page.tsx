@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useControlStore } from "@/lib/store";
 import { ReviewWorkspace } from "@/components/ReviewWorkspace";
@@ -18,6 +18,48 @@ function isVisibleInReview(r: ReviewItem): boolean {
     if (r.postedReply || r.postedGithubComment?.url) return true;
   }
   return false;
+}
+
+/**
+ * Minimal manual kick for the primary Live PR (GET /api/watch repo + pr).
+ * Same path as auto-kick (startPrReviewWorker → POST /api/review/run → worker).
+ */
+function ReviewPrButton() {
+  const live = useControlStore((s) => s.seedLiveMode === "live");
+  const start = useControlStore((s) => s.startPrReviewWorker);
+  const [target, setTarget] = useState<{ repo: string; pr: number; workstreamId?: string } | null>(null);
+  const [kicked, setKicked] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/watch")
+      .then((r) => r.json())
+      .then((d) => {
+        const w = d?.watch;
+        if (!cancelled && w?.repo && Number(w?.pr) > 0) {
+          setTarget({ repo: w.repo, pr: Number(w.pr), workstreamId: w.workstreamId || undefined });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!live || !target) return null;
+  return (
+    <button
+      type="button"
+      className="btn-ghost w-full justify-start"
+      disabled={kicked}
+      onClick={() => {
+        setKicked(true);
+        start({ repo: target.repo, pr: target.pr, workstreamId: target.workstreamId, source: "manual" });
+        window.setTimeout(() => setKicked(false), 10_000);
+      }}
+      title="Run a Claude review of the primary Live PR via the local review-worker"
+    >
+      {kicked ? `Review requested · ${target.repo}#${target.pr}` : `Review PR #${target.pr}`}
+    </button>
+  );
 }
 
 export default function ReviewPage() {
@@ -87,7 +129,8 @@ export default function ReviewPage() {
             ))}
           </ul>
         )}
-        <div className="px-4 py-3 border-t border-border">
+        <div className="px-4 py-3 border-t border-border space-y-1">
+          <ReviewPrButton />
           <Link href="/now" className="btn-ghost w-full justify-start">
             ← Now
           </Link>

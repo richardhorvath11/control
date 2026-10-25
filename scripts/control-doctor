@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # control-doctor — check that Control is set up end to end (used by /control-onboard).
 #
-# Usage: ./scripts/control-doctor [--json] [--no-verify] [--help]
+# Usage: ./scripts/control-doctor [--json] [--fast|--no-verify] [--help]
+#   Typical runtime: ~10-20s full (the verify job is a real claude -p call), ~5s with --fast.
 #   --json       also print a machine-readable JSON summary at the end
-#   --no-verify  skip the Claude verify smoke job (step 5 POST)
+#   --no-verify  skip the Claude verify smoke job (step 5 POST); --fast is an alias
 # Env: CONTROL_BASE_URL (default http://localhost:3000), VERIFY_TIMEOUT (default 90s)
 #
 # Rules: HTTP (curl) only to talk to Control — never reads/writes .control/.
@@ -11,6 +12,10 @@
 # the idempotent verify smoke job (POST /api/review/run {kind:"verify"}).
 # Exit 0 only when every step passed.
 set -uo pipefail
+# Never read stdin. On a TTY, `timeout` runs children in a background process group; if a child
+# (claude) touches the TTY it gets SIGTTIN and is *stopped* until the timeout kills it. Detaching
+# stdin makes every check deterministic whether run from a terminal, a pty, CI, or `claude -p`.
+exec </dev/null
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -29,8 +34,8 @@ JSON=0; DO_VERIFY=1
 for a in "$@"; do
   case "$a" in
     --json) JSON=1 ;;
-    --no-verify) DO_VERIFY=0 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    --no-verify|--fast) DO_VERIFY=0 ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "unknown flag: $a" >&2; exit 2 ;;
   esac
 done
@@ -57,6 +62,7 @@ http() { # METHOD PATH [BODY] -> sets CODE, BODY
   CODE="${out##*$'\n'}"; BODY="${out%$'\n'*}"
 }
 
+T0=$SECONDS
 echo "control-doctor — CONTROL_BASE_URL=$BASE"
 
 # ---- 1. Prereqs ----
@@ -152,8 +158,10 @@ else blocked "server sees claude"; blocked "verify job"; fi
 hdr "6. Slack MCP + GitHub watcher"
 if (( CLAUDE_OK )); then
   SLACK_FIX="claude plugin marketplace update anthropic-plugin-directory && claude plugin install slack@anthropic-plugin-directory   (official Slack MCP at https://mcp.slack.com/mcp; shows as plugin:slack:slack). Then in a claude session: /mcp → slack → Authenticate, and click Allow in the browser IMMEDIATELY — the localhost:3118 OAuth callback times out fast (just retry if it does). Needs you + workspace admin approval. Do NOT use bare 'claude mcp add --transport http slack https://mcp.slack.com/mcp' (fails: no dynamic client registration)."
-  mcp=$(run_to 60 claude mcp list 2>/dev/null | grep -i slack || true)
-  if [[ -z "$mcp" ]]; then record "Slack MCP" FAIL "no Slack server in 'claude mcp list'" "$SLACK_FIX"; SHOW_SLACK=1
+  mcp_all=$(run_to 45 claude mcp list 2>&1); mcp_rc=$?
+  mcp=$(grep -i slack <<<"$mcp_all" || true)
+  if [[ $mcp_rc == 124 ]]; then record "Slack MCP" FAIL "'claude mcp list' timed out after 45s (remote health checks)" "re-run; or check: claude mcp list"; SHOW_SLACK=1
+  elif [[ -z "$mcp" ]]; then record "Slack MCP" FAIL "no Slack server in 'claude mcp list'" "$SLACK_FIX"; SHOW_SLACK=1
   elif grep -qi "connected" <<<"$mcp" && ! grep -qiE "needs auth|failed" <<<"$mcp"; then record "Slack MCP" PASS "$(grep -i connected <<<"$mcp" | head -1 | sed -E 's/^([^ ]+): .* - /\1 - /')"
   else record "Slack MCP" FAIL "Slack MCP present but not connected: $(head -1 <<<"$mcp" | sed 's/.* - //')" "claude, then /mcp → slack → Authenticate; click Allow in the browser immediately (localhost:3118 callback times out fast). Needs you."; SHOW_SLACK=1; fi
 else record "Slack MCP" SKIP "blocked: claude CLI not ready (step 1)" "fix 'claude' in step 1, then add a Slack MCP server"; SHOW_SLACK=1; fi
@@ -181,6 +189,7 @@ if (( nfail == 0 )); then echo "you're live ✅"; else
   echo "fix these $nreal (plus $((nfail-nreal)) blocked step(s) will re-run after):"
   for i in "${!NAMES[@]}"; do [[ "${RESULTS[$i]}" == FAIL ]] && echo "  - ${NAMES[$i]}: ${FIXES[$i]}"; done
 fi
+echo "(took $((SECONDS-T0))s$( (( DO_VERIFY )) && echo '; --fast skips the Claude verify job'))"
 if (( JSON )); then
   printf '\n{"base_url":"%s","ok":%s,"steps":[' "$BASE" "$([[ $nfail == 0 ]] && echo true || echo false)"
   for i in "${!NAMES[@]}"; do (( i )) && printf ','; printf '{"name":"%s","result":"%s"}' "${NAMES[$i]//\"/}" "${RESULTS[$i]}"; done
