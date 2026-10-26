@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { invokeReviewRunner } from "@/lib/invoke-review-runner";
-import { findActiveVerifyJob, withVerifyEnqueueLock } from "@/lib/review-jobs";
+import { findActiveVerifyJob, findReusableSlackDraftJob, withVerifyEnqueueLock } from "@/lib/review-jobs";
 import {
   CLAUDE_VERIFY_HINTS,
   NO_REVIEW_BACKEND_DETAIL,
@@ -29,6 +29,8 @@ type Body = {
   message_ts?: string;
   permalink?: string;
   text_excerpt?: string;
+  /** "auto" = Live auto-draft / auto-kick; reuses an existing job for the same Slack message. */
+  source?: "auto" | "manual";
 };
 
 function reviewWorkerAlive(
@@ -129,6 +131,22 @@ export async function POST(req: NextRequest) {
         { error: "channel_id and message_ts required for slack_draft" },
         { status: 400 }
       );
+    }
+
+    // Auto-draft dedupe across browser sessions: reuse the existing draft job for this message.
+    if (body.source === "auto") {
+      const existing = await findReusableSlackDraftJob(channel_id, message_ts);
+      if (existing) {
+        return NextResponse.json({
+          ok: true,
+          pending: true,
+          backend: "worker",
+          job: { job_id: existing.job_id },
+          job_id: existing.job_id,
+          detail: WAITING_FOR_LOCAL_WORKER_DETAIL,
+          idempotent: true,
+        });
+      }
     }
 
     const outcome = await invokeReviewRunner({

@@ -404,3 +404,42 @@ export async function findActiveVerifyJob(): Promise<ControlReviewJobV1 | null> 
   }
   return null;
 }
+
+
+/**
+ * Auto-draft dedupe: an existing slack_draft job for the same Slack message that is still
+ * pending/claimed or finished ok. Lets a fresh browser session reuse it instead of running
+ * Claude again (autoKickedReviewKeys is per-session, not persisted).
+ */
+export async function findReusableSlackDraftJob(
+  channelId: string,
+  messageTs: string
+): Promise<{ job_id: string; status: string } | null> {
+  let names: string[] = [];
+  try {
+    names = await fs.readdir(REVIEW_JOBS_DIR);
+  } catch {
+    return null;
+  }
+  const candidates: { job_id: string; status: string; mtime: number }[] = [];
+  for (const n of names) {
+    if (!/^[A-Za-z0-9_-]+\.json$/.test(n) || n.endsWith(".failed.json") || n.endsWith(".claim.json")) continue;
+    let raw: { kind?: string; channel_id?: string; message_ts?: string };
+    try {
+      raw = JSON.parse(await fs.readFile(path.join(REVIEW_JOBS_DIR, n), "utf8"));
+    } catch {
+      continue;
+    }
+    if (raw.kind !== "slack_draft" || raw.channel_id !== channelId || raw.message_ts !== messageTs) continue;
+    const id = n.slice(0, -5);
+    const view = await getReviewJobView(id);
+    if (!view) continue;
+    const reusable =
+      view.status === "pending" || view.status === "claimed" || (view.status === "done" && view.result?.status === "ok");
+    if (!reusable) continue;
+    const st = await fs.stat(path.join(REVIEW_JOBS_DIR, n));
+    candidates.push({ job_id: id, status: view.status, mtime: st.mtimeMs });
+  }
+  candidates.sort((a, b) => b.mtime - a.mtime);
+  return candidates[0] ? { job_id: candidates[0].job_id, status: candidates[0].status } : null;
+}

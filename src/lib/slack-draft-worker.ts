@@ -44,6 +44,16 @@ export function isSlackMessageNeedsYou(
  * - why "DM to you" AND im AND excerpt has ? AND ≤280 (compat)
  * Channel @mention does not auto-draft.
  */
+/** Slack QA fixtures carry example.slack.com permalinks (not a real workspace). */
+export function isFixtureSlackPermalink(url?: string): boolean {
+  if (!url) return false;
+  try {
+    return new URL(url).hostname === "example.slack.com";
+  } catch {
+    return false;
+  }
+}
+
 export function isAutoDraftEligible(
   att: Pick<
     AttentionItem,
@@ -52,9 +62,11 @@ export function isAutoDraftEligible(
     | "slackTextExcerpt"
     | "routing"
     | "resolved"
-  >
+  > & { slackPermalink?: string }
 ): boolean {
   if (att.routing !== "now" || att.resolved) return false;
+  // QA / harness fixtures (example.slack.com) are not a real workspace: never auto-draft them.
+  if (isFixtureSlackPermalink(att.slackPermalink)) return false;
   const why = (att.why ?? "").trim();
   if (why === "Question in DM") return true;
   if (why === "DM to you") {

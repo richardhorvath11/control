@@ -11,6 +11,9 @@ import { hasSeedLiveModePreference } from "@/lib/seed-live-mode";
 
 type Gate = "pending" | "wizard" | "app";
 
+/** Max wait for /api/watch before deciding the first-run gate. */
+export const WATCH_GATE_TIMEOUT_MS = 6000;
+
 function isGetLivePath(pathname: string | null): boolean {
   return pathname === "/get-live" || pathname === "/get-live/workers" || pathname === "/onboarding";
 }
@@ -38,9 +41,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       void (async () => {
         const hasPref = hasSeedLiveModePreference();
+        // Mode already chosen → no need to wait on /api/watch to leave the gate.
+        if (hasPref) {
+          void useControlStore.getState().syncExternalInboxes();
+          setGate("app");
+          return;
+        }
         let configured = false;
         try {
-          const res = await fetch("/api/watch");
+          // Bounded: an unresolved /api/watch (cold dev compile, HMR rebuild, slow
+          // server) used to leave the gate on "Loading…" forever until reload.
+          const res = await fetch("/api/watch", {
+            signal: AbortSignal.timeout(WATCH_GATE_TIMEOUT_MS),
+            cache: "no-store",
+          });
           if (res.ok) {
             const data = (await res.json()) as {
               watch?: { configured?: boolean };
@@ -48,7 +62,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             configured = data.watch?.configured === true;
           }
         } catch {
-          /* offline — treat as unconfigured when no preference */
+          /* offline / timed out — treat as unconfigured when no preference */
         }
 
         // First-run: no mode preference AND watch not configured → Get Live.

@@ -1488,6 +1488,7 @@ export const useControlStore = create<ControlState>()(
                 attention_id: attentionId,
                 workstream_id: workstreamId,
                 provenance: args.provenance ?? [],
+                source: args.source,
               }),
             });
             const data = (await res.json().catch(() => ({}))) as {

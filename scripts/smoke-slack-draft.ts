@@ -13,6 +13,7 @@ import {
 import {
   autoDraftIdempotencyKey,
   isAutoDraftEligible,
+  isFixtureSlackPermalink,
   isSlackMessageNeedsYou,
   shouldBlockAutoDraft,
 } from "../src/lib/slack-draft-worker";
@@ -193,6 +194,39 @@ const workerSrc = fs.readFileSync(
 assert(workerSrc.includes('kind === "slack_draft"'), "worker branches on slack_draft");
 assert(workerSrc.includes("draft_text"), "worker mentions draft_text");
 assert(!/skill pack|prompt library/i.test(workerSrc), "no skill pack in worker");
+
+// Bug #1 regression: QA fixture DMs (example.slack.com) must never auto-draft,
+// and Live auto-drafts must reuse an existing job instead of spawning a new one per page load.
+assert(isFixtureSlackPermalink("https://example.slack.com/archives/D0QAMUTE001/p1788975002400004"), "example.slack.com permalink is a fixture");
+assert(!isFixtureSlackPermalink("https://acme.slack.com/archives/D1/p1"), "real workspace permalink is not a fixture");
+assert(!isFixtureSlackPermalink(undefined), "missing permalink is not a fixture");
+assert(
+  !isAutoDraftEligible({
+    why: "Question in DM",
+    routing: "now",
+    resolved: false,
+    slackPermalink: "https://example.slack.com/archives/D0QAMUTE001/p1788975002400004",
+  }),
+  "fixture DM question does not auto-draft"
+);
+assert(
+  isAutoDraftEligible({
+    why: "Question in DM",
+    routing: "now",
+    resolved: false,
+    slackPermalink: "https://acme.slack.com/archives/D1/p1",
+  }),
+  "real DM question still auto-drafts"
+);
+{
+  const routeSrc = fs.readFileSync(path.join(__dirname, "../src/app/api/review/run/route.ts"), "utf8");
+  const storeSrc = fs.readFileSync(path.join(__dirname, "../src/lib/store.ts"), "utf8");
+  const jobsSrc = fs.readFileSync(path.join(__dirname, "../src/lib/review-jobs.ts"), "utf8");
+  assert(/body\.source === "auto"[\s\S]{0,200}findReusableSlackDraftJob\(/.test(routeSrc), "route reuses existing slack_draft job for auto source");
+  assert(/idempotent: true/.test(routeSrc), "route marks reused auto-draft as idempotent");
+  assert(/source: args\.source/.test(storeSrc), "store sends source with slack_draft run");
+  assert(/export async function findReusableSlackDraftJob/.test(jobsSrc), "review-jobs exports findReusableSlackDraftJob");
+}
 
 if (failed) {
   console.error(`\n${failed} failure(s)`);
