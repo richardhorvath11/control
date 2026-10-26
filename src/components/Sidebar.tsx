@@ -20,6 +20,7 @@ const nav = [
   { href: "/workstreams", label: "Workstreams", icon: GitBranch },
   { href: "/review", label: "Review", icon: ScanSearch, badge: true },
   { href: "/agents", label: "Agents", icon: Bot, running: true },
+  { href: "/backfill", label: "Scan for work", icon: ScanSearch },
   { href: "/settings", label: "Setup", icon: Settings },
   { href: "/get-live", label: "Get Live", icon: Radio },
   { href: "/get-live/workers", label: "Workers", icon: ListChecks },

@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { startScan } from "@/lib/backfill-client";
 import { useControlStore } from "@/lib/store";
 import {
   WatchSetupForm,
@@ -16,6 +18,7 @@ import {
  * Persists via PUT /api/watch → `.control/watch.json`. Load demo never wipes this.
  */
 export default function SettingsPage() {
+  const router = useRouter();
   const setSeedLiveMode = useControlStore((s) => s.setSeedLiveMode);
   const seedLiveMode = useControlStore((s) => s.seedLiveMode);
   const {
@@ -101,6 +104,15 @@ export default function SettingsPage() {
               disabled={saving}
             >
               {saving ? "Saving…" : "Save watch"}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              data-testid="settings-scan-for-work"
+              title="Read-only look back over Slack, GitHub and Claude Code sessions; you review every suggestion"
+              onClick={() => void startScan("settings").then(() => router.push("/backfill"))}
+            >
+              Scan for existing work
             </button>
             <button
               type="button"

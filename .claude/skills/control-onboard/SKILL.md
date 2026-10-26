@@ -28,7 +28,7 @@ Goal: get the user to "you're live" with Control, or to an exact, short list of 
    (Pro/Max login via `claude` → `/login`, or headless `claude setup-token` → `CLAUDE_CODE_OAUTH_TOKEN`).
    Never require or suggest `ANTHROPIC_API_KEY`; if it is set, warn: it overrides the Pro login (`unset ANTHROPIC_API_KEY`).
 2. **Control reachable** at `CONTROL_BASE_URL`. Fix: `npm install && npm run dev`.
-3. **Live configured** — `GET /api/watch` has `repo` and ≥1 `slackWatch` surface. Fix: open `$CONTROL_BASE_URL/get-live`.
+3. **Live configured** — `GET /api/watch` answers. Every source is optional (GitHub repo, Slack surfaces, or neither); unset sources show as SKIP. Fix: open `$CONTROL_BASE_URL/get-live`.
 4. **Workers** — `./scripts/dogfood-up --check`, and `GET /api/watchers/status` shows `review-worker`,
    `github-outbox`, `github-watch` fresh (reported, not stale, not error). Fix: `./scripts/dogfood-up`.
 5. **Verify Claude** — `GET /api/review/claude-status`, then `POST /api/review/run {"kind":"verify"}`,
@@ -57,6 +57,13 @@ Goal: get the user to "you're live" with Control, or to an exact, short list of 
    `GET /api/workstreams` answers. This check is read-only and never creates a test item. Manual workstreams are things Control can't see
    on its own. Add them with ⌘K → **New workstream** or `/control-add` (which infers repo/branch from the cwd). They show on
    /now labeled **Manual** with edit / mark done / delete, and they're Resume-eligible. They never create Slack/GitHub drafts or jobs.
+6d. **Backfill scan** — `GET /api/backfill` (read-only; never starts a scan or accepts anything). Control only sees events
+   that arrive after going Live, so on first launch **prompt the user to run the scan**: Get Live → Continue queues it, or
+   /now → **Scan for work**, Settings → **Scan for existing work**, ⌘K → **Scan for work**. `scripts/control-backfill-worker.mjs`
+   (started by `dogfood-up`) reads Slack history (configured surfaces, default 30 days, threads) via `claude -p` with only the
+   Slack MCP *read* tools allowed, open PRs/issues via `gh` (only if a repo is set), and recent Claude Code sessions; then
+   `claude -p` (no tools) groups what is still pending into candidates. The user reviews them at `/backfill`: accept, edit
+   title, merge, reject, or accept all high-confidence. **Never accept candidates on the user's behalf.** Nothing is posted.
 7. **Summary** — table ending in "you're live" or "fix these N". Exit code is nonzero when anything fails.
 
 ## Notes

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useControlStore } from "@/lib/store";
 import { createManual } from "@/lib/manual-client";
 import { ManualWorkstreamForm } from "@/components/ManualWorkstreams";
+import { startScan } from "@/lib/backfill-client";
 
 const NEW_WS_ID = "new-workstream";
 
@@ -34,6 +35,13 @@ export function CommandPalette() {
     const base = [
       // Opens the inline quick-add form (handled in onClick); saved locally, never drafts or posts.
       { id: NEW_WS_ID, label: "New workstream…", run: () => undefined },
+      {
+        id: "scan-for-work",
+        label: "Scan for work (read-only backfill)",
+        run: () => {
+          void startScan("cmdk").then(() => router.push("/backfill"));
+        },
+      },
       { id: "now", label: "Go to Now", run: () => router.push("/now") },
       {
         id: "review",
@@ -96,7 +104,7 @@ export function CommandPalette() {
         label: `Resume · ${w.name}`,
         run: () => router.push(`/workstreams/${w.id}`),
       })),
-      {
+      ...(seedLiveMode === "demo" ? [{
         id: "src-slack",
         label: "Open source · Slack #infra",
         run: () => router.push("/source/slack/slack-infra"),
@@ -110,7 +118,7 @@ export function CommandPalette() {
         id: "src-rfc",
         label: "Open source · RFC Credential lifecycle",
         run: () => router.push("/source/rfc/rfc-cred"),
-      },
+      }] : []),
     ];
     const query = q.trim().toLowerCase();
     if (!query) return base;

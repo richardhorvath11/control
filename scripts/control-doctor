@@ -248,6 +248,25 @@ elif (( UP )); then
   else record "/control-add skill" FAIL "GET $BASE/api/workstreams → HTTP ${CODE:-none}" "restart the dev server (npm run dev) so the route is built"; fi
 else record "/control-add skill" SKIP "skill present; endpoint check blocked: Control not reachable" "fix step 2 first"; fi
 
+# ---- 6d. Backfill scan (first-launch, read-only) ----
+hdr "6d. Backfill scan"
+# Read-only: GET /api/backfill only. Never starts a scan, never accepts candidates.
+if ! have node || ! node --check "$ROOT/scripts/control-backfill-worker.mjs" >/dev/null 2>&1; then
+  record "backfill scan" FAIL "scripts/control-backfill-worker.mjs missing or doesn't parse" "git checkout -- scripts/control-backfill-worker.mjs"
+elif (( UP )); then
+  if http GET /api/backfill && [[ "$CODE" == 200 ]]; then
+    BF_STATUS=$(json_get "$BODY" 'd.scan.status')
+    BF_N=$(json_get "$BODY" 'd.candidates.length')
+    case "$BF_STATUS" in
+      idle) record "backfill scan" PASS "never run — open /backfill (or ⌘K → Scan for work) to find work already in flight (read-only)" ;;
+      requested|running) record "backfill scan" PASS "scan $BF_STATUS — worker: node scripts/control-backfill-worker.mjs --watch (dogfood-up starts it)" ;;
+      done) record "backfill scan" PASS "last scan done; $BF_N candidate(s) waiting for review at /backfill" ;;
+      failed) record "backfill scan" FAIL "last scan failed: $(json_get "$BODY" 'd.scan.error')" "re-run from /backfill; check claude login and gh auth" ;;
+      *) record "backfill scan" PASS "status ${BF_STATUS:-unknown}" ;;
+    esac
+  else record "backfill scan" FAIL "GET $BASE/api/backfill → HTTP ${CODE:-none}" "restart the dev server (npm run dev) so the route is built"; fi
+else record "backfill scan" SKIP "worker present; endpoint check blocked: Control not reachable" "fix step 2 first"; fi
+
 # ---- 7. Summary ----
 hdr "7. Summary"
 nfail=0

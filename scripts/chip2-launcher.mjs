@@ -149,6 +149,10 @@ async function main() {
   spawnScript("scripts/github-outbox-worker", ["--watch"]);
   console.log("started github-outbox-worker --watch");
 
+  // Read-only first-launch backfill: claims scans queued by Get Live / Settings / ⌘K "Scan for work".
+  spawnScript("scripts/control-backfill-worker.mjs", ["--watch"]);
+  console.log("started control-backfill-worker --watch (read-only scan)");
+
   const tick = path.join(ROOT, "scripts/github-watcher-tick.sh");
   let canTick = false;
   try { canTick = fs.existsSync(tick) && !!(fs.statSync(tick).mode & 0o111); } catch { canTick = false; }

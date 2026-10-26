@@ -7,6 +7,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useControlStore } from "@/lib/store";
 import type { AttentionItem, Provenance } from "@/lib/types";
 import { LiveResumeCard } from "@/components/LiveResume";
+import { BackfillPrompt } from "@/components/BackfillPrompt";
 import { ManualWorkstreamsSection } from "@/components/ManualWorkstreams";
 import { TimeText } from "@/components/RelTime";
 
@@ -193,6 +194,8 @@ function MorningNow() {
       </header>
 
       <DayStrip />
+
+      {live && <BackfillPrompt />}
 
       {live && <LiveResumeCard />}
 

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useControlStore } from "@/lib/store";
+import { startScan } from "@/lib/backfill-client";
 import {
   WatchSetupForm,
   useWatchFormLoader,
@@ -69,6 +70,8 @@ export default function GetLivePage() {
       setStatus(sourcesSummary(data.watch));
       // One step: persist watch + Switch to Live (wipes seed Needs-you).
       setSeedLiveMode("live");
+      // First launch: queue the read-only backfill scan (existing pending work); review it at /backfill.
+      void startScan("first_live");
       router.replace("/get-live/workers");
     } catch {
       setError("Save failed — watch not persisted");

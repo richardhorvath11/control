@@ -594,6 +594,21 @@ Control can learn about your Claude Code sessions, so /now's **Resume** card can
   Data lives in `.control/sessions/<id>.json` + `<id>.summary.json`.
 - **Smoke:** `npx tsx scripts/smoke-session-hook.ts` (hermetic).
 
+## Backfill scan — existing work on first launch
+
+Control only sees events that arrive after you go Live. The **backfill scan** finds work already in flight. It is **read-only**: it never posts, sends, reacts, or drafts anything.
+
+- **When it runs.** Get Live → Continue queues it automatically. You can re-run it from /backfill, Settings → **Scan for existing work**, or ⌘K → **Scan for work**. /now prompts for it until the first scan has run.
+- **What it reads** (`scripts/control-backfill-worker.mjs`, started by `dogfood-up`; HTTP to Control only):
+  - **Slack:** configured surfaces (plus DMs/MPIMs when enabled) over a lookback window (default 30 days, adjustable 1–180), including threads. It reads through the Claude Code Slack MCP plugin with `claude -p`, and only the read tools are allowed (`slack_read_channel`, `slack_read_thread`, search, list, profile). Every write tool is passed in `--disallowedTools`. The MCP returns no permalinks, so links are built from your workspace subdomain. That subdomain is learned from real permalinks Control already stored, or set with `CONTROL_SLACK_DOMAIN`. If it's unknown, Slack items are dropped (fail closed).
+  - **GitHub** (only if a repo is set): `gh search prs/issues` for open PRs you authored or must review, and issues you opened or are assigned. Retries back off on rate limits; each query is capped at `BACKFILL_GH_LIMIT`.
+  - **Claude Code sessions:** `GET /api/sessions/activity`, which covers the hook store and its summaries.
+- **How it groups.** `claude -p --tools "" --strict-mcp-config` runs under your Pro login, with the prompt on stdin and never `ANTHROPIC_API_KEY`. It keeps only genuinely pending work: unanswered asks, your commitments, open PRs and reviews, unresolved threads, call follow-ups. Each candidate has a title, a one-line why, sources, a next step, and a confidence score.
+- **Server-side validation (fail closed).** Every candidate must cite real scanned items, and links come from those items, never from the model. Fixture and test data is dropped: `example.slack.com`, and QA/test/e2e channels unless you configured them yourself.
+- **Review at `/backfill`.** You can accept, edit the title, merge two, reject, or **Accept all high-confidence** (≥ 0.8). Accepted candidates become manual workstreams (source `backfill`), so they show on /now and are Resume-eligible. Rejections persist across re-scans unless there's newer activity. State lives in `.control/backfill/` (`scan.json`, `candidates.json`, `decisions.json`).
+- **APIs:** `GET /api/backfill`, `POST /api/backfill/scan {lookback_days}`, `POST /api/backfill/decide`. Worker-only: `POST /api/backfill/claim`, `PUT /api/backfill/progress`, `POST /api/backfill/result`.
+- **Smoke:** `npx tsx scripts/smoke-backfill.ts` (fixtures, stub `claude`/`gh`).
+
 ## Manual workstreams (⌘K / `/control-add`)
 
 Some work never shows up on GitHub or Slack, like a local spike, a promise made in a hallway, or an uncommitted edit. You can add it yourself:

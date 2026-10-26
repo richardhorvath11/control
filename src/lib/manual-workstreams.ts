@@ -25,7 +25,7 @@ export interface ManualWorkstream {
   repo?: string; // owner/name (e.g. inferred from cwd by /control-add)
   branch?: string;
   cwd?: string; // absolute path the item was added from
-  source: "cmdk" | "api" | "skill";
+  source: "cmdk" | "api" | "skill" | "backfill";
   status: "open" | "done";
   created_at: string;
   updated_at: string;
