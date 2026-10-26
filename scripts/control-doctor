@@ -215,6 +215,20 @@ else
   record "claude code session hook" WARN "not installed — Resume won't see your Claude Code sessions" "./scripts/control-doctor --install-hook  (preview: --install-hook --dry-run)"
 fi
 
+# ---- 6c. /control-add skill (manual workstreams) ----
+hdr "6c. /control-add skill"
+# Read-only: checks the project skill + its script, and that the endpoint answers GET. Never POSTs a test item.
+ADD_SKILL="$ROOT/.claude/skills/control-add/SKILL.md"
+if [[ ! -f "$ADD_SKILL" ]] || ! grep -q '^name: control-add$' "$ADD_SKILL"; then
+  record "/control-add skill" FAIL "missing or malformed .claude/skills/control-add/SKILL.md" "git checkout -- .claude/skills/control-add/SKILL.md"
+elif ! have node || ! node --check "$ROOT/scripts/control-add.mjs" >/dev/null 2>&1; then
+  record "/control-add skill" FAIL "scripts/control-add.mjs missing or doesn't parse" "git checkout -- scripts/control-add.mjs"
+elif (( UP )); then
+  if http GET /api/workstreams && [[ "$CODE" == 200 ]]; then
+    record "/control-add skill" PASS "skill available in Claude Code sessions in this repo; POST /api/workstreams reachable ($(json_get "$BODY" 'd.items.length') open)"
+  else record "/control-add skill" FAIL "GET $BASE/api/workstreams → HTTP ${CODE:-none}" "restart the dev server (npm run dev) so the route is built"; fi
+else record "/control-add skill" SKIP "skill present; endpoint check blocked: Control not reachable" "fix step 2 first"; fi
+
 # ---- 7. Summary ----
 hdr "7. Summary"
 nfail=0

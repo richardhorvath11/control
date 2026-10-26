@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useControlStore } from "@/lib/store";
 import { recordResumeActivity } from "@/lib/resume-client";
+import { MANUAL_CHANGED_EVENT, setManualStatus, type ManualItem } from "@/lib/manual-client";
 import type {
   ChangeGroup,
   PrContextLike,
@@ -51,9 +52,21 @@ export type SessionResume = {
   next: NextState;
 };
 
+export type ManualResume = {
+  ok: true;
+  empty: false;
+  kind: "manual";
+  selection: { key: string; rule: string; reason: string; others: { key: string; title: string; newCount: number }[] };
+  workstream: { key: string; kind: "manual"; title: string; repo?: string };
+  last_active: ResumeAction | null;
+  manual: ManualItem & { resume_command: string | null };
+  next: NextState;
+};
+
 export type ResumeResponse =
   | { ok: true; empty: true; emptyReason: string }
   | SessionResume
+  | ManualResume
   | {
       ok: true;
       empty: false;
@@ -116,7 +129,10 @@ export function useLiveResume(enabled: boolean) {
       timer.current = window.setTimeout(tick, pending ? 4000 : 30000);
     };
     void tick();
+    const onManual = () => void load();
+    window.addEventListener(MANUAL_CHANGED_EVENT, onManual);
     return () => {
+      window.removeEventListener(MANUAL_CHANGED_EVENT, onManual);
       stop = true;
       if (timer.current) window.clearTimeout(timer.current);
     };
@@ -124,13 +140,14 @@ export function useLiveResume(enabled: boolean) {
   return { data, reload: load };
 }
 
-export function NextLine({ next }: { next: NextState }) {
+/** `by` names who wrote Next: Claude by default; "you" for a manual item's own `when`. */
+export function NextLine({ next, by = "Claude" }: { next: NextState; by?: string }) {
   if (next.status === "ok") {
     return (
       <p className="mt-3 text-[14px] leading-5" data-testid="resume-next">
         <span className="text-muted">Next: </span>
         {next.text}
-        {next.why ? <span className="block text-[11px] text-muted mt-1">Why: {next.why} · Claude</span> : null}
+        {next.why ? <span className="block text-[11px] text-muted mt-1">Why: {next.why} · {by}</span> : null}
       </p>
     );
   }
@@ -155,7 +172,7 @@ export function useResumeAction() {
   const focusResume = useControlStore((s) => s.focusResume);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const run = async (d: Exclude<Extract<ResumeResponse, { empty: false }>, SessionResume>) => {
+  const run = async (d: Exclude<Extract<ResumeResponse, { empty: false }>, SessionResume | ManualResume>) => {
     setBusy(true);
     setErr(null);
     try {
@@ -208,6 +225,7 @@ export function LiveResumeCard() {
     );
   }
   if (data.kind === "session") return <SessionResumeCard data={data} />;
+  if (data.kind === "manual") return <ManualResumeCard data={data} />;
   const { workstream: w, context: ctx, changes, pr_context: pc } = data;
   const hunks = pc?.hunks ?? [];
   const lr = ctx.left_off.latest_review;
@@ -403,6 +421,67 @@ export function SessionResumeCard({ data }: { data: SessionResume }) {
         )}
       </div>
 
+      <p className="mt-3 text-[11px] text-muted">{data.selection.reason}</p>
+      {data.selection.others.length > 0 && (
+        <p className="mt-1 text-[11px] text-muted">Also active: {data.selection.others.map((o) => o.title).join(" · ")}</p>
+      )}
+    </section>
+  );
+}
+
+/** Resume for a manual workstream (added via ⌘K → New workstream, POST /api/workstreams, or /control-add). */
+export function ManualResumeCard({ data }: { data: ManualResume }) {
+  const m = data.manual;
+  const [copied, setCopied] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const copy = async () => {
+    if (!m.resume_command) return;
+    try {
+      await navigator.clipboard.writeText(m.resume_command);
+      setCopied(true);
+      recordResumeActivity(data.workstream.key, "resumed", "Copied cd command");
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <section className="rounded-xl border border-amber/40 bg-surface p-5 shadow-[inset_3px_0_0_0_#E8A54B]" data-testid="resume-card" data-resume-kind="manual">
+      <div className="text-[11px] uppercase tracking-wide text-amber mb-1">Resume · Manual</div>
+      <h2 className="text-[18px] font-semibold leading-6">{m.title}</h2>
+      <p className="mt-1 text-[12px] text-muted">
+        {m.created_at === m.updated_at ? "Added" : "Updated"} {ago(m.updated_at)}
+        {m.repo ? <> · {m.repo}{m.branch ? ` · ${m.branch}` : ""}</> : null}
+        {m.people?.length ? <> · with {m.people.join(", ")}</> : null}
+      </p>
+      {m.note ? <p className="mt-3 text-[13px] leading-5 whitespace-pre-wrap" data-testid="manual-resume-note">{m.note}</p> : null}
+      <NextLine next={data.next} by="you" />
+      {m.link ? (
+        <a href={m.link} target="_blank" rel="noreferrer" className="mt-3 block truncate text-[12px] text-amber hover:underline" data-testid="manual-resume-link">{m.link}</a>
+      ) : null}
+      {m.resume_command ? (
+        <div className="mt-4 text-[12px]">
+          <h4 className="font-medium mb-1">Pick up in your terminal</h4>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 overflow-x-auto rounded border border-border bg-bg px-2 py-1 font-mono text-[12px]">{m.resume_command}</code>
+            <button type="button" className="btn-primary" onClick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
+          </div>
+        </div>
+      ) : null}
+      <div className="mt-4 flex gap-2">
+        <button
+          type="button"
+          className="btn-ghost"
+          data-testid="manual-resume-done"
+          onClick={async () => {
+            const r = await setManualStatus(m.id, "done");
+            setErr(r.ok ? null : r.error);
+          }}
+        >
+          Mark done
+        </button>
+      </div>
+      {err && <p className="mt-2 text-[12px] text-amber">{err}</p>}
       <p className="mt-3 text-[11px] text-muted">{data.selection.reason}</p>
       {data.selection.others.length > 0 && (
         <p className="mt-1 text-[11px] text-muted">Also active: {data.selection.others.map((o) => o.title).join(" · ")}</p>

@@ -53,6 +53,10 @@ Goal: get the user to "you're live" with Control, or to an exact, short list of 
    /now (summary, uncommitted changes, Next, copyable `cd <repo> && claude --resume <id>`).
    If Control is down, events queue in `~/.control-hook/queue/` and replay on the next successful hook run
    (or `node ~/.control-hook/bin/control-session-collect.mjs --replay`).
+6c. **/control-add skill** — `.claude/skills/control-add/SKILL.md` and `scripts/control-add.mjs` are present, and
+   `GET /api/workstreams` answers. This check is read-only and never creates a test item. Manual workstreams are things Control can't see
+   on its own. Add them with ⌘K → **New workstream** or `/control-add` (which infers repo/branch from the cwd). They show on
+   /now labeled **Manual** with edit / mark done / delete, and they're Resume-eligible. They never create Slack/GitHub drafts or jobs.
 7. **Summary** — table ending in "you're live" or "fix these N". Exit code is nonzero when anything fails.
 
 ## Notes

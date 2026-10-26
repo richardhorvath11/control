@@ -596,6 +596,23 @@ Control can learn about your Claude Code sessions, so /now's **Resume** card can
   Data lives in `.control/sessions/<id>.json` + `<id>.summary.json`.
 - **Smoke:** `npx tsx scripts/smoke-session-hook.ts` (hermetic).
 
+## Manual workstreams (⌘K / `/control-add`)
+
+Some work never shows up on GitHub or Slack, like a local spike, a promise made in a hallway, or an uncommitted edit. You can add it yourself:
+
+- **⌘K → New workstream…**: title, plus optional note, link, people and "when" (free text). The item is saved, and you land on /now.
+- **`/control-add` in Claude Code** (`.claude/skills/control-add/SKILL.md`). It runs `scripts/control-add.mjs`, which infers the repo (GitHub `origin`), the branch and the repo root from the current directory. Run `node scripts/control-add.mjs --title "…" --dry-run` to preview.
+- **API**:
+  - `GET /api/workstreams[?include_done=1]`
+  - `POST /api/workstreams` `{title, note?, link?, people?, when?, repo?, branch?, cwd?}` → 201
+  - `GET|PATCH|DELETE /api/workstreams/:id`. PATCH `{status:"done"|"open"}` marks an item done or reopens it, and `""`/`null` clears a field.
+
+Items are stored in `.control/workstreams.json`. They show on /now under **Manual workstreams**, labeled *Manual*, with Edit, Mark done and Delete.
+
+**Resume:** if your newest open manual item was updated after both the latest GitHub/Slack activity and the latest Claude Code session, it becomes the Resume card. Its "Next" is your own *when*, labeled as yours. Control never invents a Next for it. Marking the item done hands Resume back.
+
+**Side effects: none.** Manual items never create Slack or GitHub drafts, never queue review jobs, and never start Claude. `scripts/smoke-manual-workstreams.ts` checks this. Doctor row **6c** checks the skill, the script and the endpoint.
+
 ## Standing watchers (V0.6)
 
 Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slack tokens; the host agent runs `gh` / Slack MCP and POSTs into the existing inbox APIs.

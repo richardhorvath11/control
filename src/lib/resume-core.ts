@@ -138,7 +138,7 @@ export function prKey(repo: string, pr: number): string {
 export function slackKey(channel: string, threadTs: string): string {
   return `slack:${channel}:${threadTs}`;
 }
-export const RESUME_KEY_RE = /^(pr:[a-z0-9_.-]+\/[a-z0-9_.-]+#\d+|slack:[A-Z0-9]+:\d+\.\d+|session:[A-Za-z0-9_-]{1,100})$/;
+export const RESUME_KEY_RE = /^(pr:[a-z0-9_.-]+\/[a-z0-9_.-]+#\d+|slack:[A-Z0-9]+:\d+\.\d+|session:[A-Za-z0-9_-]{1,100}|manual:mw_[a-z0-9]{6,32})$/;
 
 const NON_WORK_JOB_KINDS = new Set(["verify", "resume_next"]);
 
@@ -567,7 +567,7 @@ export const sessionKey = (id: string) => `session:${id}`;
 export function newestExternalActivityAt(ws: DerivedWorkstream[], activity: ActivityStore): number {
   let max = 0;
   for (const w of ws) for (const e of w.events) if (e.kind !== "job_done" && e.kind !== "job_failed") max = Math.max(max, ts(e.at));
-  for (const k of Object.keys(activity)) if (!k.startsWith("session:")) max = Math.max(max, ts(activity[k]?.last_action?.at));
+  for (const k of Object.keys(activity)) if (!k.startsWith("session:") && !k.startsWith("manual:")) max = Math.max(max, ts(activity[k]?.last_action?.at));
   return max;
 }
 
@@ -607,4 +607,44 @@ export function sessionNext(s: SessionLike): SessionNext {
   if (sm.status === "ok") return { status: "unavailable", reason: "the transcript doesn't imply a next step", job_id };
   if (sm.status === "fallback") return { status: "unavailable", reason: `Claude summary unavailable${sm.error ? ` (${sm.error})` : ""} — showing the transcript tail`, job_id };
   return { status: "unavailable", reason: sm.error || "no transcript text to summarize", job_id };
+}
+
+// ---------- manual workstreams (POST /api/workstreams) as a Resume source ----------
+export interface ManualLike {
+  id: string;
+  title: string;
+  status: "open" | "done";
+  updated_at: string;
+  cwd?: string;
+}
+
+export const manualKey = (id: string) => `manual:${id}`;
+
+export type ResumeSource<S extends SessionLike, M extends ManualLike> =
+  | { kind: "session"; session: S; at: number }
+  | { kind: "manual"; manual: M; at: number };
+
+/**
+ * Newest of {latest real Claude Code session, latest-touched open manual workstream} — returned only when it is
+ * newer than every GitHub/Slack event and user action on those; otherwise the derived workstream keeps Resume.
+ * Ties go to the session (it carries more context).
+ */
+export function pickResumeSource<S extends SessionLike, M extends ManualLike>(
+  sessions: S[],
+  manuals: M[],
+  ws: DerivedWorkstream[],
+  activity: ActivityStore,
+): ResumeSource<S, M> | null {
+  const ext = newestExternalActivityAt(ws, activity);
+  const s = sessions.filter((x) => !x.test).sort((a, b) => ts(b.last_event_at) - ts(a.last_event_at))[0];
+  const m = manuals.filter((x) => x.status === "open").sort((a, b) => ts(b.updated_at) - ts(a.updated_at))[0];
+  const sAt = s ? ts(s.last_event_at) : 0;
+  const mAt = m ? ts(m.updated_at) : 0;
+  if (s && sAt >= mAt && sAt > ext) return { kind: "session", session: s, at: sAt };
+  if (m && mAt > sAt && mAt > ext) return { kind: "manual", manual: m, at: mAt };
+  return null;
+}
+
+export function manualResumeCommand(m: ManualLike): string | null {
+  return m.cwd ? `cd ${shQuote(m.cwd)}` : null;
 }

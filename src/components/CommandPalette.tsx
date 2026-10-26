@@ -1,8 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useControlStore } from "@/lib/store";
+import { createManual } from "@/lib/manual-client";
+import { ManualWorkstreamForm } from "@/components/ManualWorkstreams";
+
+const NEW_WS_ID = "new-workstream";
 
 export function CommandPalette() {
   const open = useControlStore((s) => s.launcherOpen);
@@ -16,9 +20,20 @@ export function CommandPalette() {
   const mode = useControlStore((s) => s.mode);
   const router = useRouter();
   const [q, setQ] = useState("");
+  const [adding, setAdding] = useState(false);
+  useEffect(() => {
+    if (!open) setAdding(false); // Esc (AppShell) closes without going through close()
+  }, [open]);
+  const close = () => {
+    setOpen(false);
+    setQ("");
+    setAdding(false);
+  };
 
   const items = useMemo(() => {
     const base = [
+      // Opens the inline quick-add form (handled in onClick); saved locally, never drafts or posts.
+      { id: NEW_WS_ID, label: "New workstream…", run: () => undefined },
       { id: "now", label: "Go to Now", run: () => router.push("/now") },
       {
         id: "review",
@@ -107,12 +122,30 @@ export function CommandPalette() {
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 pt-[15vh] px-4"
-      onClick={() => setOpen(false)}
+      onClick={close}
     >
       <div
         className="w-full max-w-xl panel overflow-hidden shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
+        {adding ? (
+          <div className="p-4" data-testid="cmdk-new-workstream">
+            <div className="mb-2 text-[11px] uppercase tracking-wide text-muted">New workstream · Manual</div>
+            <ManualWorkstreamForm
+              autoFocus
+              submitLabel="Add workstream"
+              onCancel={() => setAdding(false)}
+              onSubmit={async (d) => {
+                const r = await createManual(d, "cmdk");
+                if (!r.ok) return r.error;
+                close();
+                router.push("/now");
+                return null;
+              }}
+            />
+          </div>
+        ) : (
+        <>
         <input
           autoFocus
           value={q}
@@ -126,10 +159,14 @@ export function CommandPalette() {
               <button
                 type="button"
                 className="w-full text-left px-4 py-2.5 text-[13px] hover:bg-raised"
+                data-testid={item.id === NEW_WS_ID ? "cmdk-new-workstream-item" : undefined}
                 onClick={() => {
+                  if (item.id === NEW_WS_ID) {
+                    setAdding(true);
+                    return;
+                  }
                   item.run();
-                  setOpen(false);
-                  setQ("");
+                  close();
                 }}
               >
                 {item.label}
@@ -143,6 +180,8 @@ export function CommandPalette() {
         <div className="border-t border-border px-4 py-2 text-[11px] text-muted">
           Launcher — not chat. Esc to close.
         </div>
+        </>
+        )}
       </div>
     </div>
   );

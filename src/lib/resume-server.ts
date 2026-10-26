@@ -19,9 +19,12 @@ import {
 } from "./review-runner";
 import { isWatcherStale, readWatcherStatus } from "./watcher-status";
 import { listSessions } from "./session-activity";
+import { listManualWorkstreams } from "./manual-workstreams";
 import {
   RESUME_KEY_RE,
-  pickNewerSession,
+  pickResumeSource,
+  manualKey,
+  manualResumeCommand,
   sessionKey,
   sessionNext,
   sessionResumeCommand,
@@ -221,8 +224,32 @@ export async function getResume(opts: { ensureNext: boolean }) {
   const workstreams = deriveWorkstreams({ githubItems: githubItems as never, slackItems: slackItems as never, jobs, snapshots });
   const sel = selectResume(workstreams, activity);
 
-  // A Claude Code session newer than every GitHub/Slack event and user action wins.
-  const session = pickNewerSession(await listSessions(), workstreams, activity);
+  // A Claude Code session or a manual workstream newer than every GitHub/Slack event and user action wins.
+  const [sessions, manuals] = await Promise.all([listSessions(), listManualWorkstreams()]);
+  const src = pickResumeSource(sessions, manuals, workstreams, activity);
+  const others = sel ? [{ key: sel.workstream.key, title: sel.workstream.title, newCount: sel.newCount }, ...sel.others].slice(0, 3) : [];
+  if (src?.kind === "manual") {
+    const m = src.manual;
+    const key = manualKey(m.id);
+    return {
+      ok: true as const,
+      empty: false as const,
+      kind: "manual" as const,
+      selection: {
+        key,
+        rule: "newer_manual" as const,
+        reason: `You ${m.created_at === m.updated_at ? "added" : "updated"} this manual workstream after the latest GitHub/Slack activity and Claude Code session`,
+        others,
+      },
+      workstream: { key, kind: "manual" as const, title: m.title, repo: m.repo },
+      last_active: activity[key]?.last_action ?? null,
+      manual: { ...m, resume_command: manualResumeCommand(m) },
+      next: m.when
+        ? { status: "ok" as const, text: m.when, why: "Your own 'when' on this item", job_id: key }
+        : { status: "unavailable" as const, reason: "manual item — no 'when' set", job_id: key },
+    };
+  }
+  const session = src?.kind === "session" ? src.session : null;
   if (session) {
     const key = sessionKey(session.session_id);
     const sm = session.summary;
@@ -234,7 +261,7 @@ export async function getResume(opts: { ensureNext: boolean }) {
         key,
         rule: "newer_session" as const,
         reason: `Your latest Claude Code session (${session.ended ? "ended" : "last turn"} ${session.last_event_at}) is newer than any GitHub/Slack activity`,
-        others: sel ? [{ key: sel.workstream.key, title: sel.workstream.title, newCount: sel.newCount }, ...sel.others].slice(0, 3) : [],
+        others,
       },
       workstream: { key, kind: "session" as const, title: sessionTitle(session), repo: session.repo?.slug },
       last_active: activity[key]?.last_action ?? null,
