@@ -1,10 +1,10 @@
 "use client";
 
+import { RemoveWorkstreamButton } from "./RemoveWorkstream";
 import { useCallback, useEffect, useState } from "react";
 import {
   EMPTY_MANUAL_DRAFT,
   MANUAL_CHANGED_EVENT,
-  deleteManual,
   draftFromItem,
   listManual,
   setManualStatus,
@@ -75,7 +75,6 @@ export function ManualWorkstreamForm({
 
 function ManualRow({ item }: { item: ManualItem }) {
   const [editing, setEditing] = useState(false);
-  const [confirmDel, setConfirmDel] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const done = item.status === "done";
   if (editing) {
@@ -123,25 +122,7 @@ function ManualRow({ item }: { item: ManualItem }) {
         >
           {done ? "Reopen" : "Mark done"}
         </button>
-        {confirmDel ? (
-          <>
-            <button
-              type="button"
-              className="btn-ghost text-amber"
-              data-testid="manual-delete-confirm"
-              onClick={async () => {
-                const r = await deleteManual(item.id);
-                setErr(r.ok ? null : r.error);
-                setConfirmDel(false);
-              }}
-            >
-              Confirm delete
-            </button>
-            <button type="button" className="btn-ghost" onClick={() => setConfirmDel(false)}>Keep</button>
-          </>
-        ) : (
-          <button type="button" className="btn-ghost" onClick={() => setConfirmDel(true)} data-testid="manual-delete">Delete</button>
-        )}
+        <RemoveWorkstreamButton row={{ key: `manual:${item.id}`, kind: "manual", title: item.title, manual_id: item.id }} />
       </div>
     </li>
   );

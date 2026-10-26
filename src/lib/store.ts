@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import seed from "./seed.json";
+import { CONTROL_PERSIST_VERSION, EMPTY_LIVE_DAYSTRIP, migrateControlV0, scrubSeedRefs, stripDemoForLive } from "./live-sanitize";
 import type {
   Agent,
   AttentionItem,
@@ -314,9 +315,23 @@ export const useControlStore = create<ControlState>()(
         // from pre-fix persist (agents/reviewQueue/autoKicked no longer
         // partialize, but in-session Demo→refresh edge still needs this).
         if (mode === "live") {
+          // Every Live load: strip seed / demo-origin rows (workstreams, attention, fyi,
+          // delegations, sources, day strip) so nothing from seed.json ever renders in Live.
+          const st = get();
           set({
             seedLiveMode: "live",
             ...emptyLiveReviewWorkerSlice(),
+            ...stripDemoForLive({
+              workstreams: st.workstreams,
+              attention: st.attention,
+              fyi: st.fyi,
+              suggestedDelegations: st.suggestedDelegations,
+              usedDelegationIds: st.usedDelegationIds,
+              focusWorkstreamId: st.focusWorkstreamId,
+              selectedReviewId: null,
+              sources: st.sources,
+              dayStrip: st.dayStrip,
+            }),
           });
         } else {
           set({ seedLiveMode: mode });
@@ -347,19 +362,22 @@ export const useControlStore = create<ControlState>()(
           // Demo→Live / first Live: wipe seed Monday Needs-you (Priya etc.) so
           // empty Live Now is dogfood-correct. Keep only durable external items
           // if any somehow present; seed rows have no github|slack|external origin.
-          const keptAttention = get().attention.filter(
-            (a) =>
-              a.origin === "github" ||
-              a.origin === "slack" ||
-              a.origin === "external"
-          );
+          const st = get();
           set({
             seedLiveMode: "live",
             ...emptyLiveReviewWorkerSlice(),
-            attention: keptAttention,
-            fyi: [],
-            suggestedDelegations: [],
-            usedDelegationIds: [],
+            ...stripDemoForLive({
+              workstreams: st.workstreams,
+              attention: st.attention,
+              fyi: [],
+              suggestedDelegations: [],
+              usedDelegationIds: [],
+              focusWorkstreamId: st.focusWorkstreamId,
+              selectedReviewId: null,
+              sources: st.sources,
+              dayStrip: EMPTY_LIVE_DAYSTRIP,
+            }),
+            liveFocus: null,
           });
           get().recomputeMode();
         } else {
@@ -633,6 +651,8 @@ export const useControlStore = create<ControlState>()(
           };
           if (Array.isArray(data.items)) {
             get().applyGithubInboxItems(data.items);
+            const scrub = scrubSeedRefs(get().attention, get().workstreams);
+            if (scrub) set(scrub);
           }
         } catch {
           // offline / no watcher — seed still boots
@@ -824,6 +844,8 @@ export const useControlStore = create<ControlState>()(
           };
           if (Array.isArray(data.items)) {
             get().applySlackInboxItems(data.items);
+            const scrub = scrubSeedRefs(get().attention, get().workstreams);
+            if (scrub) set(scrub);
           }
         } catch {
           // offline / no watcher — seed still boots
@@ -2481,6 +2503,11 @@ export const useControlStore = create<ControlState>()(
     }),
     {
       name: "control-v0",
+      version: CONTROL_PERSIST_VERSION,
+      // v<2 blobs (older Demo sessions) may carry seed workstreams / Needs-you into Live.
+      // Strip them on load when this browser is in Live — no manual reset needed.
+      migrate: (persisted, fromVersion) =>
+        migrateControlV0(persisted, fromVersion, readSeedLiveMode()) as never,
       storage: createJSONStorage(() => localStorage),
       skipHydration: true,
       partialize: (state) => ({

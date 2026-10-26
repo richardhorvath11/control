@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useControlStore } from "@/lib/store";
 import { RelTime, TimeText } from "@/components/RelTime";
 import { recordResumeActivity } from "@/lib/resume-client";
+import { RemoveWorkstreamButton } from "./RemoveWorkstream";
 import { MANUAL_CHANGED_EVENT, setManualStatus, type ManualItem } from "@/lib/manual-client";
 import type {
   ChangeGroup,
@@ -260,6 +261,7 @@ export function LiveResumeCard() {
             {busy ? "Opening…" : "Resume"}
           </button>
           <span className="text-[11px] text-muted">{data.primary_action.label}</span>
+          <RemoveWorkstreamButton row={{ key: w.key, kind: w.kind, title: w.title }} className="btn-ghost text-[11px]" />
         </div>
       </div>
       {err ? <p className="mt-2 text-[12px] text-amber">{err}</p> : null}
@@ -380,7 +382,7 @@ export function SessionResumeCard({ data }: { data: SessionResume }) {
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="text-[11px] uppercase tracking-wide text-amber mb-1">Resume · Claude Code session</div>
-          <h2 className="text-[18px] font-semibold leading-6">{data.workstream.title}</h2>
+          <h2 className="text-[18px] font-semibold leading-6 flex items-center gap-2">{data.workstream.title}<RemoveWorkstreamButton row={{ key: data.workstream.key, kind: "session", title: data.workstream.title }} className="btn-ghost text-[11px] font-normal" /></h2>
           <p className="mt-1 text-[12px] text-muted">
             Session <span className="font-mono">{s.session_id}</span> · {s.ended ? "ended" : "last turn"} <RelTime at={s.last_event_at} />
             {s.head ? <> · HEAD <span className="font-mono">{s.head.sha.slice(0, 7)}</span> {s.head.subject}</> : null}
@@ -456,7 +458,7 @@ export function ManualResumeCard({ data }: { data: ManualResume }) {
   return (
     <section className="rounded-xl border border-amber/40 bg-surface p-5 shadow-[inset_3px_0_0_0_#E8A54B]" data-testid="resume-card" data-resume-kind="manual">
       <div className="text-[11px] uppercase tracking-wide text-amber mb-1">Resume · Manual</div>
-      <h2 className="text-[18px] font-semibold leading-6">{m.title}</h2>
+      <h2 className="text-[18px] font-semibold leading-6 flex items-center gap-2">{m.title}<RemoveWorkstreamButton row={{ key: data.workstream.key, kind: "manual", title: m.title, manual_id: m.id }} className="btn-ghost text-[11px] font-normal" /></h2>
       <p className="mt-1 text-[12px] text-muted">
         {m.created_at === m.updated_at ? "Added" : "Updated"} <RelTime at={m.updated_at} />
         {m.repo ? <> · {m.repo}{m.branch ? ` · ${m.branch}` : ""}</> : null}

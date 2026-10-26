@@ -12,7 +12,7 @@ export function ConfirmModal() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
-      <div className="w-full max-w-lg panel p-5 shadow-2xl">
+      <div className="w-full max-w-lg panel p-5 shadow-2xl" role="dialog" data-testid="confirm-modal">
         <h2 className="text-[16px] font-semibold leading-6">{modal.title}</h2>
         <p className="mt-1 text-[12px] text-muted">
           {modal.subtitle ??
@@ -41,6 +41,7 @@ export function ConfirmModal() {
           <button
             type="button"
             className="btn-primary disabled:opacity-60"
+            data-testid="confirm-modal-ok"
             disabled={busy}
             onClick={() => {
               void Promise.resolve(modal.onConfirm());

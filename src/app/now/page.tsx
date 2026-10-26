@@ -20,6 +20,9 @@ export default function NowPage() {
 function DayStrip() {
   const dayStrip = useControlStore((s) => s.dayStrip);
   const clockLabel = useControlStore((s) => s.clockLabel);
+  // Live has no calendar source: the day strip (meetings, clock, "Standup in…") is Demo seed only.
+  const live = useControlStore((s) => s.seedLiveMode) === "live";
+  if (live) return null;
 
   return (
     <div className="panel px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -528,10 +531,12 @@ function ClearNow() {
     <div className="mx-auto max-w-2xl px-8 py-24 space-y-6">
       <DayStrip />
       <h1 className="text-[28px] font-semibold tracking-tight pt-8">Clear.</h1>
-      <p className="text-[16px] text-muted leading-6">
-        Next meeting {nextMeeting?.time ?? "2:00"} ·{" "}
-        {nextMeeting?.title ?? "Design review"}.
-      </p>
+      {!live && (
+        <p className="text-[16px] text-muted leading-6">
+          Next meeting {nextMeeting?.time ?? "2:00"} ·{" "}
+          {nextMeeting?.title ?? "Design review"}.
+        </p>
+      )}
       <div className="flex gap-2 pt-2">
         {resume && (
           <Link href={`/workstreams/${resume.id}`} className="btn-primary">

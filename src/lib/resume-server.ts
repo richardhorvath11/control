@@ -20,6 +20,7 @@ import {
 import { isWatcherStale, readWatcherStatus } from "./watcher-status";
 import { listSessions } from "./session-activity";
 import { listManualWorkstreams } from "./manual-workstreams";
+import { isDismissed, readDismissals } from "./dismissals";
 import {
   RESUME_KEY_RE,
   pickResumeSource,
@@ -221,11 +222,16 @@ export async function getResume(opts: { ensureNext: boolean }) {
     listSnapshots(),
     readActivity(),
   ]);
-  const workstreams = deriveWorkstreams({ githubItems: githubItems as never, slackItems: slackItems as never, jobs, snapshots });
+  const dismissed = await readDismissals();
+  // Dismissed derived items (same key, no newer activity) are skipped by Resume.
+  const workstreams = deriveWorkstreams({ githubItems: githubItems as never, slackItems: slackItems as never, jobs, snapshots }).filter(
+    (w) => !isDismissed(dismissed, w.key, w.lastEventAt)
+  );
   const sel = selectResume(workstreams, activity);
 
   // A Claude Code session or a manual workstream newer than every GitHub/Slack event and user action wins.
-  const [sessions, manuals] = await Promise.all([listSessions(), listManualWorkstreams()]);
+  const [allSessions, manuals] = await Promise.all([listSessions(), listManualWorkstreams()]);
+  const sessions = allSessions.filter((x) => !isDismissed(dismissed, sessionKey(x.session_id), x.last_event_at));
   const src = pickResumeSource(sessions, manuals, workstreams, activity);
   const others = sel ? [{ key: sel.workstream.key, title: sel.workstream.title, newCount: sel.newCount }, ...sel.others].slice(0, 3) : [];
   if (src?.kind === "manual") {
@@ -377,4 +383,54 @@ export async function getResume(opts: { ensureNext: boolean }) {
     next,
     primary_action: primaryAction(w, context, rec),
   };
+}
+
+// ---------- Live workstream list (/workstreams, delete/dismiss) ----------
+export interface LiveWorkstreamRow {
+  key: string;
+  kind: "pr" | "slack" | "session" | "manual";
+  title: string;
+  url?: string;
+  last_activity_at: string;
+  manual_id?: string;
+}
+
+/** Every real workstream: derived PR/Slack, Claude sessions, open manual items. Dismissed ones are hidden. */
+export async function listLiveWorkstreams(): Promise<{ items: LiveWorkstreamRow[]; dismissed: number }> {
+  const [githubItems, slackItems, jobs, snapshots, sessions, manuals, dismissed] = await Promise.all([
+    listInboxItems(),
+    listSlackInboxItems(),
+    listJobSummaries(),
+    listSnapshots(),
+    listSessions(),
+    listManualWorkstreams(),
+    readDismissals(),
+  ]);
+  const all: LiveWorkstreamRow[] = [
+    ...deriveWorkstreams({ githubItems: githubItems as never, slackItems: slackItems as never, jobs, snapshots }).map((w) => ({
+      key: w.key,
+      kind: w.kind,
+      title: w.title,
+      url: w.url,
+      last_activity_at: w.lastEventAt,
+    })),
+    ...sessions.filter((x) => !x.test).map((x) => ({
+      key: sessionKey(x.session_id),
+      kind: "session" as const,
+      title: sessionTitle(x),
+      last_activity_at: x.last_event_at,
+    })),
+  ];
+  const visible = all.filter((r) => !isDismissed(dismissed, r.key, r.last_activity_at));
+  const manualRows: LiveWorkstreamRow[] = manuals
+    .filter((m) => m.status === "open")
+    .map((m) => ({ key: manualKey(m.id), kind: "manual", title: m.title, url: m.link || undefined, last_activity_at: m.updated_at, manual_id: m.id }));
+  const items = [...manualRows, ...visible].sort((a, b) => Date.parse(b.last_activity_at) - Date.parse(a.last_activity_at));
+  return { items, dismissed: all.length - visible.length };
+}
+
+/** Look up a derived row's current last-activity (server-side, so a client can't pick the timestamp). */
+export async function findDerivedRow(key: string): Promise<LiveWorkstreamRow | null> {
+  const { items } = await listLiveWorkstreams();
+  return items.find((r) => r.key === key && r.kind !== "manual") ?? null;
 }

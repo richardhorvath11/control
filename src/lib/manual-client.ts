@@ -84,3 +84,27 @@ export async function listManual(includeDone = false): Promise<ManualItem[] | { 
     return { error: e instanceof Error ? e.message : "fetch failed" };
   }
 }
+
+/** Dismiss a derived (PR / Slack / session) workstream until it gets newer activity. Server-side, local file only. */
+export function dismissWorkstream(key: string) {
+  return call(`/api/workstreams/dismiss`, { method: "POST", body: JSON.stringify({ key }) });
+}
+
+/** Confirm copy for delete (manual) vs dismiss (derived) — plain about what happens. */
+export function removeConfirmCopy(row: { kind: string; title: string }): { title: string; subtitle: string; body: string; confirmLabel: string } {
+  if (row.kind === "manual") {
+    return {
+      title: `Delete “${row.title}”?`,
+      subtitle: "Permanent — removes this manual workstream from Control. Nothing is posted anywhere.",
+      body: "This deletes the item from .control/workstreams.json. It can't be undone; add it again with ⌘K if you need it back.",
+      confirmLabel: "Delete",
+    };
+  }
+  const what = row.kind === "pr" ? "pull request" : row.kind === "slack" ? "Slack thread" : "Claude Code session";
+  return {
+    title: `Dismiss “${row.title}”?`,
+    subtitle: "Hides it from Control only. Nothing changes on GitHub or Slack.",
+    body: `This ${what} will stay hidden from /now, /workstreams and Resume, across every watcher tick.\nIt comes back automatically only if there is NEW activity on it after now (a new commit, review, comment, message or session turn).`,
+    confirmLabel: "Dismiss",
+  };
+}
