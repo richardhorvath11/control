@@ -25,6 +25,7 @@ export const KNOWN_WATCHER_IDS = [
   "review-worker",
   "slack-outbox",
   "github-outbox",
+  "backfill-worker",
 ] as const;
 
 export type KnownWatcherId = (typeof KNOWN_WATCHER_IDS)[number];

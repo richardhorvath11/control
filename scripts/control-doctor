@@ -257,6 +257,9 @@ elif (( UP )); then
   if http GET /api/backfill && [[ "$CODE" == 200 ]]; then
     BF_STATUS=$(json_get "$BODY" 'd.scan.status')
     BF_N=$(json_get "$BODY" 'd.candidates.length')
+    BF_W=$(json_get "$BODY" 'd.worker ? d.worker.status + "|" + (d.worker.available ? 1 : 0) + "|" + (d.worker.updated_at || "") : "missing|0|"')
+    if [[ "$BF_W" == *"|1|"* ]]; then record "backfill worker" PASS "heartbeat fresh (${BF_W%%|*}, ${BF_W##*|})"
+    else record "backfill worker" FAIL "heartbeat ${BF_W%%|*} — the backfill worker isn't running, so scans stay queued" "CONTROL_BASE_URL=$BASE ./scripts/dogfood-up   (starts control-backfill-worker --watch; heartbeat within ~10s)"; fi
     case "$BF_STATUS" in
       idle) record "backfill scan" PASS "never run — open /backfill (or ⌘K → Scan for work) to find work already in flight (read-only)" ;;
       requested|running) record "backfill scan" PASS "scan $BF_STATUS — worker: node scripts/control-backfill-worker.mjs --watch (dogfood-up starts it)" ;;

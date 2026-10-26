@@ -134,6 +134,7 @@ if [[ "$*" == *"prs"*"--author"* ]]; then echo '[{"number":7,"title":"Fix","url"
 `, { mode: 0o755 });
 
   let lastResult: any = null;
+  const beats: any[] = [];
   const srv = http.createServer(async (req, res) => {
     let body = ""; for await (const c of req) body += c;
     const j = body ? JSON.parse(body) : {};
@@ -141,6 +142,7 @@ if [[ "$*" == *"prs"*"--author"* ]]; then echo '[{"number":7,"title":"Fix","url"
     if (req.url === "/api/backfill/claim") { const s = await L.claimScan(); return s ? send(200, { scan: s, watch: { repo: "o/r", slackWatch: { surfaces: [{ id: "C111", name: "#eng" }] }, slack_team_domain: DOM } }) : send(204); }
     if (req.url === "/api/backfill/progress") { await L.reportProgress(j.scan_id, j.source, j); return send(200, {}); }
     if (req.url === "/api/backfill/result") { lastResult = await L.finishScan(j.scan_id, j); return send(200, lastResult); }
+    if (req.url === "/api/watchers/status" && req.method === "PUT") { beats.push(j); return send(200, {}); }
     if (req.url === "/api/sessions/activity") return send(200, { sessions: [] });
     send(404, {});
   });
@@ -170,7 +172,21 @@ if [[ "$*" == *"prs"*"--author"* ]]; then echo '[{"number":7,"title":"Fix","url"
   await runWorker("Sorry, I can't produce JSON");
   sc = await L.readScan();
   assert(sc.status === "failed" && /grouping/.test(sc.error || ""), "unparseable grouping → scan failed (fail closed)");
+  assert(beats.some((b) => b.id === "backfill-worker" && b.status === "ticking") && beats.some((b) => b.id === "backfill-worker" && b.status === "error" && /grouping/.test(b.last_action)), "worker heartbeats ticking during scan and error after a failed scan");
+  const nb = beats.length;
+  await runWorker("{}"); // nothing requested → idle heartbeat
+  assert(beats.slice(nb).some((b) => b.id === "backfill-worker" && b.status === "idle"), "idle heartbeat when no scan is requested");
   srv.close();
+
+  // ---- heartbeat → board + availability ----
+  const WS = await import(path.join(ROOT, "src/lib/watcher-status"));
+  assert(WS.buildWatcherRows({ watchers: {} }).some((r: any) => r.id === "backfill-worker"), "backfill-worker row on the watcher board");
+  assert((await L.backfillWorkerState()).status === "missing", "no heartbeat → worker missing");
+  await WS.writeWatcherStatus({ watchers: { "backfill-worker": { id: "backfill-worker", status: "idle", last_action: "idle", updated_at: new Date().toISOString() } } });
+  assert((await L.backfillWorkerState()).available === true && (await L.backfillSummary()).worker.available, "fresh heartbeat → available (also in GET summary)");
+  await WS.writeWatcherStatus({ watchers: { "backfill-worker": { id: "backfill-worker", status: "idle", last_action: "idle", updated_at: new Date(Date.now() - 10 * 60_000).toISOString() } } });
+  const st = await L.backfillWorkerState();
+  assert(st.available === false && st.status === "stale", "old heartbeat → stale, unavailable");
 }
 
 main().then(() => {

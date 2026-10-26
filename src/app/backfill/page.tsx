@@ -137,6 +137,9 @@ export default function BackfillPage() {
         ) : (
           <p className="text-[12px] text-muted">No scan yet.</p>
         )}
+        {v?.worker && !v.worker.available && (
+          <p className="text-[11px] text-blocked" data-testid="backfill-worker-down">Backfill worker {v.worker.status === "missing" ? "has not reported" : `heartbeat ${v.worker.status}`} — start <code>./scripts/dogfood-up</code> so scans run.</p>
+        )}
         {scan?.status === "requested" && (
           <p className="text-[11px] text-muted">The scan runs in <code className="text-text">scripts/control-backfill-worker.mjs</code> (started by <code className="text-text">dogfood-up</code>).</p>
         )}

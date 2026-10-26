@@ -332,13 +332,23 @@ export function decide(a: DecideAction, createWorkstream: (c: Candidate) => Prom
   });
 }
 
+/** Worker availability from its /api/watchers/status heartbeat (id backfill-worker). */
+export async function backfillWorkerState(now = new Date()) {
+  const { readWatcherStatus, isWatcherStale } = await import("./watcher-status");
+  const rec = (await readWatcherStatus()).watchers["backfill-worker"];
+  if (!rec?.updated_at) return { available: false, status: "missing" as const, updated_at: null, last_action: null };
+  const stale = isWatcherStale(rec.updated_at, now);
+  return { available: !stale && rec.status !== "error", status: stale ? ("stale" as const) : rec.status, updated_at: rec.updated_at, last_action: rec.last_action };
+}
+
 export async function backfillSummary() {
-  const [scan, doc, decisions] = await Promise.all([readScan(), readCandidateDoc(), readDecisions()]);
+  const [scan, doc, decisions, worker] = await Promise.all([readScan(), readCandidateDoc(), readDecisions(), backfillWorkerState()]);
   const vals = Object.values(decisions);
   return {
     scan,
     candidates: doc.candidates,
     decided: { accepted: vals.filter((d) => d.decision === "accepted").length, rejected: vals.filter((d) => d.decision === "rejected").length },
     ever_scanned: !!scan.scan_id,
+    worker,
   };
 }

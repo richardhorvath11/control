@@ -9,6 +9,7 @@ export type BackfillView = {
   candidates: Candidate[];
   decided: { accepted: number; rejected: number };
   ever_scanned: boolean;
+  worker?: { available: boolean; status: string; updated_at: string | null; last_action: string | null };
 };
 
 export async function fetchBackfill(): Promise<BackfillView | null> {

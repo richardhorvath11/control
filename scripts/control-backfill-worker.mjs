@@ -299,14 +299,24 @@ export async function runScan(scan, watch) {
   return { status: "done", raw, candidates: parsed.candidates };
 }
 
+/** Heartbeat to the watcher board (best-effort), like the other workers: id backfill-worker. */
+export async function heartbeat(status, last_action, detail) {
+  return http("PUT", "/api/watchers/status", { id: "backfill-worker", status, last_action, ...(detail ? { detail } : {}) }).catch(() => null);
+}
+
 async function tick() {
   const c = await http("POST", "/api/backfill/claim").catch((e) => ({ status: 0, err: e }));
-  if (c.status === 204) return false;
-  if (c.status !== 200 || !c.json?.scan) { if (c.status) log(`claim → ${c.status}`); return false; }
+  if (c.status === 204) { await heartbeat("idle", "idle — no scan requested (read-only)"); return false; }
+  if (c.status !== 200 || !c.json?.scan) { if (c.status) { log(`claim → ${c.status}`); await heartbeat("error", `claim → HTTP ${c.status}`); } return false; }
   const { scan, watch } = c.json;
+  await heartbeat("ticking", `scanning ${scan.lookback_days}d (${scan.scan_id})`);
+  // Keep the heartbeat fresh during long claude -p runs.
+  const hb = setInterval(() => void heartbeat("ticking", `scanning ${scan.lookback_days}d (${scan.scan_id})`), 30_000);
   let res;
   try { res = await runScan(scan, watch); } catch (e) { res = { status: "failed", error: String(e?.message || e) }; }
+  finally { clearInterval(hb); }
   const p = await http("POST", "/api/backfill/result", { scan_id: scan.scan_id, ...res });
+  await heartbeat(res.status === "failed" ? "error" : "idle", `last scan ${scan.scan_id} → ${res.status}${res.error ? ": " + String(res.error).slice(0, 120) : ""}`);
   log(`scan ${scan.scan_id} → ${res.status}; result POST ${p.status}${p.json?.scan?.counts ? " " + JSON.stringify(p.json.scan.counts) : ""}${res.error ? " · " + res.error : ""}`);
   return true;
 }

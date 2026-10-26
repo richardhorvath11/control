@@ -30,6 +30,8 @@ type VerifyStatus = "idle" | "checking" | "ok" | "failed";
 
 const LOCAL_REQUIRED = ["review-worker", "github-outbox", "github-watch"] as const;
 const SLACK_INFO = ["slack-watch", "slack-outbox"] as const;
+/** Informational (never blocks Continue): the read-only backfill scan worker. */
+const BACKFILL_INFO = ["backfill-worker"] as const;
 const LAUNCH_CMD = "./scripts/dogfood-up";
 const VERIFY_POLL_MS = 2000;
 
@@ -401,6 +403,27 @@ export default function GetLiveWorkersPage() {
               );
             })}
           </div>
+        </div>
+
+        <div className="panel p-5 space-y-2" data-testid="backfill-worker-row">
+          <div className="text-[11px] uppercase tracking-wide text-muted">Backfill (informational — never blocks)</div>
+          {BACKFILL_INFO.map((id) => {
+            const row = byId.get(id);
+            const green = isGreen(row);
+            const label = !row?.updated_at ? "missing" : row.stale ? "stale" : row.display_status || row.status;
+            return (
+              <div key={id} className="flex items-center gap-3 px-3 py-1.5" data-watcher-id={id} data-checklist="informational" data-state={label}>
+                <span className={green ? "text-running text-[12px]" : "text-muted text-[12px]"}>{green ? "●" : "○"}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="font-mono text-[12px]">{id}</div>
+                  <div className="text-[11px] text-muted truncate">
+                    {green ? row?.last_action : !row?.updated_at ? "no heartbeat — start ./scripts/dogfood-up" : "heartbeat is old — restart ./scripts/dogfood-up"}
+                  </div>
+                </div>
+                <span className="chip text-[11px] shrink-0">{label}</span>
+              </div>
+            );
+          })}
         </div>
 
         {/* V0.9 chip 3 — Verify Claude (additive; no API key fields) */}
