@@ -323,6 +323,9 @@ export function groupChanges(events: ResumeEvent[]): ChangeGroup[] {
 export interface ResumeSelection {
   workstream: DerivedWorkstream;
   reason: string;
+  /** When the thing the reason refers to happened (ISO; UI renders it relative). Never embedded in `reason`. */
+  at?: string;
+  atLabel?: string;
   rule: "most_recently_touched" | "most_new_activity";
   newCount: number;
   others: { key: string; title: string; newCount: number; lastActiveAt?: string }[];
@@ -382,7 +385,9 @@ export function selectResume(ws: DerivedWorkstream[], activity: ActivityStore): 
     .sort((a, b) => ts(b.w.lastEventAt) - ts(a.w.lastEventAt))
     .slice(0, 3)
     .map((s) => ({ key: s.w.key, title: s.w.title, newCount: s.newCount, lastActiveAt: s.last?.at }));
-  return { workstream: pick.w, reason, rule, newCount: pick.newCount, others };
+  const at = pick.last?.at ?? pick.w.lastEventAt;
+  const atLabel = pick.last ? "you last worked on it" : "latest activity";
+  return { workstream: pick.w, reason, at, atLabel, rule, newCount: pick.newCount, others };
 }
 
 /** FNV-1a 32-bit hex — stable, no crypto dependency. */

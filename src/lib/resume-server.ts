@@ -239,6 +239,8 @@ export async function getResume(opts: { ensureNext: boolean }) {
         key,
         rule: "newer_manual" as const,
         reason: `You ${m.created_at === m.updated_at ? "added" : "updated"} this manual workstream after the latest GitHub/Slack activity and Claude Code session`,
+        at: m.updated_at,
+        at_label: m.created_at === m.updated_at ? "added" : "updated",
         others,
       },
       workstream: { key, kind: "manual" as const, title: m.title, repo: m.repo },
@@ -260,7 +262,9 @@ export async function getResume(opts: { ensureNext: boolean }) {
       selection: {
         key,
         rule: "newer_session" as const,
-        reason: `Your latest Claude Code session (${session.ended ? "ended" : "last turn"} ${session.last_event_at}) is newer than any GitHub/Slack activity`,
+        reason: "Your latest Claude Code session is newer than any GitHub/Slack activity",
+        at: session.last_event_at,
+        at_label: session.ended ? "ended" : "last turn",
         others,
       },
       workstream: { key, kind: "session" as const, title: sessionTitle(session), repo: session.repo?.slug },
@@ -364,7 +368,7 @@ export async function getResume(opts: { ensureNext: boolean }) {
   return {
     ok: true as const,
     empty: false as const,
-    selection: { key: w.key, rule: sel.rule, reason: sel.reason, others: sel.others },
+    selection: { key: w.key, rule: sel.rule, reason: sel.reason, at: sel.at, at_label: sel.atLabel, others: sel.others },
     workstream: { key: w.key, kind: w.kind, title: w.title, url: w.url, repo: w.repo, pr: w.pr, channel_id: w.channel_id, thread_ts: w.thread_ts, channel_label: w.channel_label },
     last_active: rec?.last_action ?? null,
     changes: { total: changes.length, groups: groupChanges(changes).slice(0, 8), items: changes.slice(0, 12) },

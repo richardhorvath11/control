@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useControlStore } from "@/lib/store";
+import { RelTime, TimeText } from "@/components/RelTime";
 import { recordResumeActivity } from "@/lib/resume-client";
 import { MANUAL_CHANGED_EVENT, setManualStatus, type ManualItem } from "@/lib/manual-client";
 import type {
@@ -45,7 +46,7 @@ export type SessionResume = {
   ok: true;
   empty: false;
   kind: "session";
-  selection: { key: string; rule: string; reason: string; others: { key: string; title: string; newCount: number }[] };
+  selection: { key: string; rule: string; reason: string; at?: string; at_label?: string; others: { key: string; title: string; newCount: number }[] };
   workstream: { key: string; kind: "session"; title: string; repo?: string };
   last_active: ResumeAction | null;
   session: SessionResumeData;
@@ -56,7 +57,7 @@ export type ManualResume = {
   ok: true;
   empty: false;
   kind: "manual";
-  selection: { key: string; rule: string; reason: string; others: { key: string; title: string; newCount: number }[] };
+  selection: { key: string; rule: string; reason: string; at?: string; at_label?: string; others: { key: string; title: string; newCount: number }[] };
   workstream: { key: string; kind: "manual"; title: string; repo?: string };
   last_active: ResumeAction | null;
   manual: ManualItem & { resume_command: string | null };
@@ -71,7 +72,7 @@ export type ResumeResponse =
       ok: true;
       empty: false;
       kind?: undefined;
-      selection: { key: string; rule: string; reason: string; others: { key: string; title: string; newCount: number }[] };
+      selection: { key: string; rule: string; reason: string; at?: string; at_label?: string; others: { key: string; title: string; newCount: number }[] };
       workstream: { key: string; kind: "pr" | "slack"; title: string; url?: string; repo?: string; pr?: number };
       last_active: ResumeAction | null;
       changes: { total: number; groups: ChangeGroup[]; items: ResumeEvent[] };
@@ -81,15 +82,6 @@ export type ResumeResponse =
       primary_action: ResumePrimaryAction;
     }
   | { ok: false; error: string };
-
-function ago(at?: string): string {
-  if (!at) return "";
-  const s = Math.max(0, (Date.now() - Date.parse(at)) / 1000);
-  if (s < 90) return "just now";
-  if (s < 3600) return `${Math.round(s / 60)} min ago`;
-  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
-  return `${Math.round(s / 86400)} d ago`;
-}
 
 const KIND_LABEL: Record<string, string> = {
   pr_comment: "PR comment",
@@ -141,13 +133,29 @@ export function useLiveResume(enabled: boolean) {
 }
 
 /** `by` names who wrote Next: Claude by default; "you" for a manual item's own `when`. */
+/** Why this card is Resume, with its time relative ("12 min ago"; exact local time on hover). */
+function SelectionReason({ sel }: { sel: { reason: string; at?: string; at_label?: string } }) {
+  return (
+    <span data-testid="resume-why">
+      <TimeText text={sel.reason} />
+      {sel.at ? (
+        <>
+          {" · "}
+          {sel.at_label ? `${sel.at_label} ` : ""}
+          <RelTime at={sel.at} />
+        </>
+      ) : null}
+    </span>
+  );
+}
+
 export function NextLine({ next, by = "Claude" }: { next: NextState; by?: string }) {
   if (next.status === "ok") {
     return (
       <p className="mt-3 text-[14px] leading-5" data-testid="resume-next">
         <span className="text-muted">Next: </span>
-        {next.text}
-        {next.why ? <span className="block text-[11px] text-muted mt-1">Why: {next.why} · {by}</span> : null}
+        <TimeText text={next.text} />
+        {next.why ? <span className="block text-[11px] text-muted mt-1">Why: <TimeText text={next.why} /> · {by}</span> : null}
       </p>
     );
   }
@@ -160,7 +168,7 @@ export function NextLine({ next, by = "Claude" }: { next: NextState; by?: string
   }
   return (
     <p className="mt-3 text-[13px] text-amber" data-testid="resume-next">
-      Next unavailable — {next.reason}
+      Next unavailable — <TimeText text={next.reason} />
     </p>
   );
 }
@@ -192,7 +200,7 @@ export function useResumeAction() {
         url: d.workstream.url,
         next: d.next.status === "ok" ? d.next.text : undefined,
         open: d.context.open.map((o) => o.label),
-        leftOff: d.last_active ? `${d.last_active.label} (${ago(d.last_active.at)})` : undefined,
+        leftOff: d.last_active ? `${d.last_active.label} (${d.last_active.at})` : undefined,
       });
     } finally {
       setBusy(false);
@@ -242,8 +250,8 @@ export function LiveResumeCard() {
             )}
           </h2>
           <p className="mt-1 text-[12px] text-muted">
-            {w.kind === "pr" ? "Pull request" : "Slack thread"} · {data.selection.reason}
-            {data.last_active ? ` · last active ${ago(data.last_active.at)}` : ""}
+            {w.kind === "pr" ? "Pull request" : "Slack thread"} · <SelectionReason sel={data.selection} />
+            {data.last_active ? <> · last active <RelTime at={data.last_active.at} /></> : null}
           </p>
           <NextLine next={data.next} />
         </div>
@@ -269,11 +277,11 @@ export function LiveResumeCard() {
                 <li key={g.kind} className="text-text/90">
                   <span className="text-muted">{KIND_LABEL[g.kind] ?? g.kind}{g.count > 1 ? ` ×${g.count}` : ""}:</span>{" "}
                   {g.latest.url ? (
-                    <a href={g.latest.url} target="_blank" rel="noopener noreferrer" className="hover:underline">{g.latest.label}</a>
+                    <a href={g.latest.url} target="_blank" rel="noopener noreferrer" className="hover:underline"><TimeText text={g.latest.label} /></a>
                   ) : (
                     g.latest.label
                   )}{" "}
-                  <span className="text-muted">· {ago(g.latest.at)}</span>
+                  <span className="text-muted">· <RelTime at={g.latest.at} /></span>
                 </li>
               ))}
             </ul>
@@ -282,11 +290,11 @@ export function LiveResumeCard() {
         <div>
           <h4 className="font-medium mb-1">Where you left off</h4>
           <ul className="space-y-1 text-text/90">
-            <li>{data.last_active ? `${data.last_active.label} · ${ago(data.last_active.at)}` : "No action recorded yet."}</li>
+            <li>{data.last_active ? <><TimeText text={data.last_active.label} /> · <RelTime at={data.last_active.at} /></> : "No action recorded yet."}</li>
             {ctx.left_off.user_draft ? <li className="text-muted">Your draft: “{ctx.left_off.user_draft.slice(0, 160)}”</li> : null}
             {lr ? (
               <li>
-                Review ({ago(lr.at)}): {lr.findings.length} finding(s)
+                Review (<RelTime at={lr.at} />): {lr.findings.length} finding(s)
                 {lr.findings.length ? ` — ${lr.findings.slice(0, 4).map((f) => f.title).join("; ")}` : ""}
               </li>
             ) : null}
@@ -297,7 +305,7 @@ export function LiveResumeCard() {
             {[...ctx.open, ...(pc && !pc.error ? livePrOpen(pc) : [])].map((o, i) => (
               <li key={i} className={o.severity === "blocking" ? "text-amber" : o.severity === "open" ? "text-text/90" : "text-muted"}>
                 {o.severity === "blocking" ? "■ " : o.severity === "open" ? "● " : "· "}
-                {o.url ? <a href={o.url} target="_blank" rel="noopener noreferrer" className="hover:underline">{o.label}</a> : o.label}
+                {o.url ? <a href={o.url} target="_blank" rel="noopener noreferrer" className="hover:underline"><TimeText text={o.label} /></a> : <TimeText text={o.label} />}
               </li>
             ))}
             {pc?.error ? <li className="text-muted">Live PR state unavailable — {pc.error}</li> : null}
@@ -320,12 +328,12 @@ export function LiveResumeCard() {
             ))}
             {(pc?.comments ?? []).slice(-3).map((c, i) => (
               <div key={`c${i}`} className="text-text/90">
-                <span className="text-muted">PR comment · {c.author} · {ago(c.created_at)}:</span> {c.body.slice(0, 240)}
+                <span className="text-muted">PR comment · {c.author} · <RelTime at={c.created_at} />:</span> {c.body.slice(0, 240)}
               </div>
             ))}
             {ctx.slack.slice(0, 3).map((s, i) => (
               <div key={`s${i}`} className="text-text/90">
-                <span className="text-muted">Slack{s.channel_label ? ` · ${s.channel_label}` : ""} · {ago(s.at)}:</span>{" "}
+                <span className="text-muted">Slack{s.channel_label ? ` · ${s.channel_label}` : ""} · <RelTime at={s.at} />:</span>{" "}
                 {s.permalink ? <a href={s.permalink} target="_blank" rel="noopener noreferrer" className="hover:underline">“{s.text.slice(0, 200)}”</a> : `“${s.text.slice(0, 200)}”`}
               </div>
             ))}
@@ -335,7 +343,7 @@ export function LiveResumeCard() {
 
       {data.selection.others.length > 0 && (
         <p className="mt-4 text-[11px] text-muted">
-          Also active: {data.selection.others.map((o) => `${o.title} (${o.newCount})`).join(" · ")}
+          Also active: <TimeText text={data.selection.others.map((o) => `${o.title} (${o.newCount})`).join(" · ")} />
         </p>
       )}
     </section>
@@ -374,7 +382,7 @@ export function SessionResumeCard({ data }: { data: SessionResume }) {
           <div className="text-[11px] uppercase tracking-wide text-amber mb-1">Resume · Claude Code session</div>
           <h2 className="text-[18px] font-semibold leading-6">{data.workstream.title}</h2>
           <p className="mt-1 text-[12px] text-muted">
-            Session <span className="font-mono">{s.session_id}</span> · {s.ended ? "ended" : "last turn"} {ago(s.last_event_at)}
+            Session <span className="font-mono">{s.session_id}</span> · {s.ended ? "ended" : "last turn"} <RelTime at={s.last_event_at} />
             {s.head ? <> · HEAD <span className="font-mono">{s.head.sha.slice(0, 7)}</span> {s.head.subject}</> : null}
           </p>
           <div className="mt-3 text-[13px] leading-5" data-testid="session-summary">
@@ -421,9 +429,9 @@ export function SessionResumeCard({ data }: { data: SessionResume }) {
         )}
       </div>
 
-      <p className="mt-3 text-[11px] text-muted">{data.selection.reason}</p>
+      <p className="mt-3 text-[11px] text-muted" data-testid="resume-reason"><SelectionReason sel={data.selection} /></p>
       {data.selection.others.length > 0 && (
-        <p className="mt-1 text-[11px] text-muted">Also active: {data.selection.others.map((o) => o.title).join(" · ")}</p>
+        <p className="mt-1 text-[11px] text-muted">Also active: <TimeText text={data.selection.others.map((o) => o.title).join(" · ")} /></p>
       )}
     </section>
   );
@@ -450,7 +458,7 @@ export function ManualResumeCard({ data }: { data: ManualResume }) {
       <div className="text-[11px] uppercase tracking-wide text-amber mb-1">Resume · Manual</div>
       <h2 className="text-[18px] font-semibold leading-6">{m.title}</h2>
       <p className="mt-1 text-[12px] text-muted">
-        {m.created_at === m.updated_at ? "Added" : "Updated"} {ago(m.updated_at)}
+        {m.created_at === m.updated_at ? "Added" : "Updated"} <RelTime at={m.updated_at} />
         {m.repo ? <> · {m.repo}{m.branch ? ` · ${m.branch}` : ""}</> : null}
         {m.people?.length ? <> · with {m.people.join(", ")}</> : null}
       </p>
@@ -482,9 +490,9 @@ export function ManualResumeCard({ data }: { data: ManualResume }) {
         </button>
       </div>
       {err && <p className="mt-2 text-[12px] text-amber">{err}</p>}
-      <p className="mt-3 text-[11px] text-muted">{data.selection.reason}</p>
+      <p className="mt-3 text-[11px] text-muted" data-testid="resume-reason"><SelectionReason sel={data.selection} /></p>
       {data.selection.others.length > 0 && (
-        <p className="mt-1 text-[11px] text-muted">Also active: {data.selection.others.map((o) => o.title).join(" · ")}</p>
+        <p className="mt-1 text-[11px] text-muted">Also active: <TimeText text={data.selection.others.map((o) => o.title).join(" · ")} /></p>
       )}
     </section>
   );

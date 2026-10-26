@@ -8,6 +8,7 @@ import { useControlStore } from "@/lib/store";
 import type { AttentionItem, Provenance } from "@/lib/types";
 import { LiveResumeCard } from "@/components/LiveResume";
 import { ManualWorkstreamsSection } from "@/components/ManualWorkstreams";
+import { TimeText } from "@/components/RelTime";
 
 export default function NowPage() {
   const mode = useControlStore((s) => s.mode);
@@ -463,7 +464,7 @@ function FocusNow() {
           <p className="mt-3 text-[16px] leading-6 text-text/90">
             {liveFocus?.next ? `Next: ${liveFocus.next}` : liveFocus ? "Next unavailable — no Claude Next for this workstream yet." : "No Live workstream loaded. Use Resume on Now."}
           </p>
-          {liveFocus?.leftOff ? <p className="mt-2 text-[13px] text-muted">Left off: {liveFocus.leftOff}</p> : null}
+          {liveFocus?.leftOff ? <p className="mt-2 text-[13px] text-muted">Left off: <TimeText text={liveFocus.leftOff} /></p> : null}
           {liveFocus?.open.length ? (
             <ul className="mt-2 text-[13px] text-muted space-y-0.5">
               {liveFocus.open.map((o) => (
