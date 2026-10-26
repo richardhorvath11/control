@@ -18,8 +18,14 @@ import {
   writeReviewJob,
 } from "./review-runner";
 import { isWatcherStale, readWatcherStatus } from "./watcher-status";
+import { listSessions } from "./session-activity";
 import {
   RESUME_KEY_RE,
+  pickNewerSession,
+  sessionKey,
+  sessionNext,
+  sessionResumeCommand,
+  sessionTitle,
   activityHash,
   buildResumeContext,
   changesSince,
@@ -214,6 +220,43 @@ export async function getResume(opts: { ensureNext: boolean }) {
   ]);
   const workstreams = deriveWorkstreams({ githubItems: githubItems as never, slackItems: slackItems as never, jobs, snapshots });
   const sel = selectResume(workstreams, activity);
+
+  // A Claude Code session newer than every GitHub/Slack event and user action wins.
+  const session = pickNewerSession(await listSessions(), workstreams, activity);
+  if (session) {
+    const key = sessionKey(session.session_id);
+    const sm = session.summary;
+    return {
+      ok: true as const,
+      empty: false as const,
+      kind: "session" as const,
+      selection: {
+        key,
+        rule: "newer_session" as const,
+        reason: `Your latest Claude Code session (${session.ended ? "ended" : "last turn"} ${session.last_event_at}) is newer than any GitHub/Slack activity`,
+        others: sel ? [{ key: sel.workstream.key, title: sel.workstream.title, newCount: sel.newCount }, ...sel.others].slice(0, 3) : [],
+      },
+      workstream: { key, kind: "session" as const, title: sessionTitle(session), repo: session.repo?.slug },
+      last_active: activity[key]?.last_action ?? null,
+      session: {
+        session_id: session.session_id,
+        cwd: session.cwd,
+        repo: session.repo ?? null,
+        branch: session.branch ?? null,
+        head: session.head ?? null,
+        diff: session.diff ?? null,
+        last_event: session.last_event,
+        last_event_at: session.last_event_at,
+        ended: session.ended,
+        resume_command: sessionResumeCommand(session),
+        summary: sm
+          ? { status: sm.status, source: sm.source, text: sm.summary ?? null, tail: sm.tail ?? null, error: sm.error ?? null, running: sm.claude === "running" }
+          : null,
+      },
+      next: sessionNext(session),
+    };
+  }
+
   if (!sel) {
     return {
       ok: true as const,

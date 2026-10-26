@@ -527,6 +527,7 @@ async function runResumeNext(job) {
   }
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
+  env.CONTROL_HOOK_DISABLE = "1"; // Control's own claude -p runs must not report as user sessions (session hook)
   const NO_TOOLS = ["-p", "--tools", "", "--permission-prompts", "none", "--strict-mcp-config"];
   const once = () => new Promise((resolve) => {
     let stdout = "", stderr = "";
@@ -561,6 +562,7 @@ function runClaudeOnce(job, ctx) {
   const glue = buildGluePrompt(job, ctx);
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
+  env.CONTROL_HOOK_DISABLE = "1"; // Control's own claude -p runs must not report as user sessions (session hook)
 
   return new Promise((resolve) => {
     const useEnvU = process.platform !== "win32";
@@ -659,6 +661,7 @@ async function runVerifyClaude(job) {
     'Reply with exactly this single line and nothing else:\nclaude ok';
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
+  env.CONTROL_HOOK_DISABLE = "1"; // Control's own claude -p runs must not report as user sessions (session hook)
 
   const attempt = await new Promise((resolve) => {
     const useEnvU = process.platform !== "win32";

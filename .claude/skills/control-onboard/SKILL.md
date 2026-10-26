@@ -42,6 +42,17 @@ Goal: get the user to "you're live" with Control, or to an exact, short list of 
    Never add tokens yourself. Also print the agent-loop block from
    `scripts/slack-watch.md`. Plus `./scripts/github-watcher-tick.sh --dry-run` (existing mode: prints
    would-post, does not curl Control at all — no inbox POST, no status PUT).
+6b. **Claude Code session hook** — checks that `~/.claude/settings.json` has Control's command hook on
+   `Stop` + `SessionEnd`, then pipes a `Test` event through the installed hook and confirms it reaches
+   `GET /api/sessions/activity` within 10s. Not installed = WARN. Fix (ask the user first, since it edits their
+   global Claude settings): preview with `./scripts/control-doctor --install-hook --dry-run`, then
+   `./scripts/control-doctor --install-hook`. It's an idempotent merge that writes a timestamped backup
+   `settings.json.control-backup-<UTC>` first and refuses to touch unparseable JSON. Remove with
+   `./scripts/control-doctor --uninstall-hook`, which removes only Control's entries. Once it's installed, every Claude Code
+   session reports repo/branch/HEAD/diff stat to Control, and a newer session becomes the **Resume** card on
+   /now (summary, uncommitted changes, Next, copyable `cd <repo> && claude --resume <id>`).
+   If Control is down, events queue in `~/.control-hook/queue/` and replay on the next successful hook run
+   (or `node ~/.control-hook/bin/control-session-collect.mjs --replay`).
 7. **Summary** — table ending in "you're live" or "fix these N". Exit code is nonzero when anything fails.
 
 ## Notes

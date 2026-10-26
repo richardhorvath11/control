@@ -138,7 +138,7 @@ export function prKey(repo: string, pr: number): string {
 export function slackKey(channel: string, threadTs: string): string {
   return `slack:${channel}:${threadTs}`;
 }
-export const RESUME_KEY_RE = /^(pr:[a-z0-9_.-]+\/[a-z0-9_.-]+#\d+|slack:[A-Z0-9]+:\d+\.\d+)$/;
+export const RESUME_KEY_RE = /^(pr:[a-z0-9_.-]+\/[a-z0-9_.-]+#\d+|slack:[A-Z0-9]+:\d+\.\d+|session:[A-Za-z0-9_-]{1,100})$/;
 
 const NON_WORK_JOB_KINDS = new Set(["verify", "resume_next"]);
 
@@ -533,4 +533,78 @@ export interface PrContextLike {
   reviews?: { author?: string; state?: string; body?: string; submitted_at?: string }[];
   hunks?: { file: string; line: number; finding?: string; header: string; text: string }[];
   fetched_at?: string;
+}
+
+/* ---------------- Claude Code sessions (hook source) ---------------- */
+
+/** Subset of a stored session record (session-activity.ts) that Resume reads. */
+export interface SessionLike {
+  session_id: string;
+  cwd: string;
+  repo?: { toplevel: string; remote?: string; slug?: string };
+  branch?: string;
+  head?: { sha: string; subject: string };
+  diff?: { files_changed: number; insertions: number; deletions: number; files?: string[]; untracked: number; untracked_files?: string[]; stat?: string };
+  last_event_at: string;
+  last_event: string;
+  ended: boolean;
+  test?: boolean;
+  summary?: {
+    status: "ok" | "fallback" | "unavailable" | "pending";
+    source: "claude" | "transcript_tail" | null;
+    summary?: string | null;
+    next?: string | null;
+    tail?: { last_user?: string; last_assistant?: string };
+    error?: string;
+    claude?: "running";
+    finished_at?: string;
+  } | null;
+}
+
+export const sessionKey = (id: string) => `session:${id}`;
+
+/** Newest GitHub/Slack activity (external events only — our own worker job outcomes don't count) or user action. */
+export function newestExternalActivityAt(ws: DerivedWorkstream[], activity: ActivityStore): number {
+  let max = 0;
+  for (const w of ws) for (const e of w.events) if (e.kind !== "job_done" && e.kind !== "job_failed") max = Math.max(max, ts(e.at));
+  for (const k of Object.keys(activity)) if (!k.startsWith("session:")) max = Math.max(max, ts(activity[k]?.last_action?.at));
+  return max;
+}
+
+/** The newest real (non-test) session, if it is newer than all GitHub/Slack activity and actions. */
+export function pickNewerSession<S extends SessionLike>(sessions: S[], ws: DerivedWorkstream[], activity: ActivityStore): S | null {
+  const real = sessions.filter((s) => !s.test).sort((a, b) => ts(b.last_event_at) - ts(a.last_event_at));
+  if (!real.length) return null;
+  return ts(real[0].last_event_at) > newestExternalActivityAt(ws, activity) ? real[0] : null;
+}
+
+/** POSIX single-quote a path for a copyable shell command. */
+export function shQuote(s: string): string {
+  return /^[A-Za-z0-9_./@%+=:,-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+export function sessionResumeCommand(s: SessionLike): string {
+  return `cd ${shQuote(s.repo?.toplevel || s.cwd)} && claude --resume ${s.session_id}`;
+}
+
+export function sessionTitle(s: SessionLike): string {
+  const where = s.repo?.slug || (s.repo?.toplevel || s.cwd).split("/").filter(Boolean).pop() || s.cwd;
+  return `${where}${s.branch ? ` · ${s.branch}` : ""}`;
+}
+
+export type SessionNext =
+  | { status: "ok"; text: string; why?: string; job_id: string }
+  | { status: "pending"; job_id: string; detail: string }
+  | { status: "unavailable"; reason: string; job_id?: string };
+
+/** Next line for a session: only Claude's summary can supply one; never invented. */
+export function sessionNext(s: SessionLike): SessionNext {
+  const sm = s.summary;
+  const job_id = `session:${s.session_id}`;
+  if (sm?.claude === "running") return { status: "pending", job_id, detail: "Claude is summarizing the session…" };
+  if (!sm) return { status: "unavailable", reason: "no summary yet for this session", job_id };
+  if (sm.status === "ok" && sm.next) return { status: "ok", text: sm.next, why: "From Claude's summary of the session transcript", job_id };
+  if (sm.status === "ok") return { status: "unavailable", reason: "the transcript doesn't imply a next step", job_id };
+  if (sm.status === "fallback") return { status: "unavailable", reason: `Claude summary unavailable${sm.error ? ` (${sm.error})` : ""} — showing the transcript tail`, job_id };
+  return { status: "unavailable", reason: sm.error || "no transcript text to summarize", job_id };
 }

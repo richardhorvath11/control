@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# control-session-hook — Claude Code hook (Stop + SessionEnd) that tells Control where you left off.
+# Installed to ~/.control-hook/bin/ by `./scripts/control-doctor --install-hook`.
+# Contract: never blocks Claude Code. Spools stdin to a file, detaches the collector, exits 0 in ms.
+# The collector (control-session-collect.mjs) does git + HTTP + disk queue in the background.
+[[ "${CONTROL_HOOK_DISABLE:-}" == 1 ]] && exit 0   # Control's own claude -p runs (summaries, worker)
+H="${CONTROL_HOOK_HOME:-$HOME/.control-hook}"
+NODE_BIN="${CONTROL_HOOK_NODE:-__CONTROL_HOOK_NODE__}"
+[[ -x "$NODE_BIN" ]] || NODE_BIN="$(command -v node 2>/dev/null)" || exit 0
+mkdir -p "$H/spool" 2>/dev/null || exit 0
+f="$H/spool/$(date +%s%N 2>/dev/null || date +%s)-$$.json"
+cat > "$f" 2>/dev/null || { rm -f "$f"; exit 0; }
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# setsid + nohup + all fds redirected: survives Claude Code's hook timeout / exit, never holds stdout.
+setsid nohup "$NODE_BIN" "$DIR/control-session-collect.mjs" "$f" </dev/null >>"$H/hook.log" 2>&1 &
+exit 0

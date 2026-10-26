@@ -256,7 +256,7 @@ function runCommand(job, inPath, outPath) {
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
     timeout: 300_000,
-    env: process.env,
+    env: { ...process.env, CONTROL_HOOK_DISABLE: "1" }, // Control's own claude runs are not user sessions
   });
   if (r.status === 4 || (r.error && r.error.code === "ENOENT")) {
     console.error(r.stderr || r.error?.message || "command backend missing");

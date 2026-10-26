@@ -19,11 +19,45 @@ type NextState =
   | { status: "pending"; job_id: string; detail: string }
   | { status: "unavailable"; reason: string; job_id?: string };
 
+export interface SessionResumeData {
+  session_id: string;
+  cwd: string;
+  repo: { toplevel: string; remote?: string; slug?: string } | null;
+  branch: string | null;
+  head: { sha: string; subject: string } | null;
+  diff: { files_changed: number; insertions: number; deletions: number; files?: string[]; untracked: number; untracked_files?: string[]; stat?: string } | null;
+  last_event: string;
+  last_event_at: string;
+  ended: boolean;
+  resume_command: string;
+  summary: {
+    status: "ok" | "fallback" | "unavailable" | "pending";
+    source: "claude" | "transcript_tail" | null;
+    text: string | null;
+    tail: { last_user?: string; last_assistant?: string } | null;
+    error: string | null;
+    running: boolean;
+  } | null;
+}
+
+export type SessionResume = {
+  ok: true;
+  empty: false;
+  kind: "session";
+  selection: { key: string; rule: string; reason: string; others: { key: string; title: string; newCount: number }[] };
+  workstream: { key: string; kind: "session"; title: string; repo?: string };
+  last_active: ResumeAction | null;
+  session: SessionResumeData;
+  next: NextState;
+};
+
 export type ResumeResponse =
   | { ok: true; empty: true; emptyReason: string }
+  | SessionResume
   | {
       ok: true;
       empty: false;
+      kind?: undefined;
       selection: { key: string; rule: string; reason: string; others: { key: string; title: string; newCount: number }[] };
       workstream: { key: string; kind: "pr" | "slack"; title: string; url?: string; repo?: string; pr?: number };
       last_active: ResumeAction | null;
@@ -121,7 +155,7 @@ export function useResumeAction() {
   const focusResume = useControlStore((s) => s.focusResume);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const run = async (d: Extract<ResumeResponse, { empty: false }>) => {
+  const run = async (d: Exclude<Extract<ResumeResponse, { empty: false }>, SessionResume>) => {
     setBusy(true);
     setErr(null);
     try {
@@ -173,6 +207,7 @@ export function LiveResumeCard() {
       </section>
     );
   }
+  if (data.kind === "session") return <SessionResumeCard data={data} />;
   const { workstream: w, context: ctx, changes, pr_context: pc } = data;
   const hunks = pc?.hunks ?? [];
   const lr = ctx.left_off.latest_review;
@@ -297,4 +332,81 @@ function livePrOpen(pc: PrContextLike): { label: string; severity: "blocking" | 
   if ((pc.review_requests || []).length) out.push({ label: `Reviewers requested (live): ${pc.review_requests!.join(", ")}`, severity: "open" });
   if (pc.state && pc.state !== "OPEN") out.push({ label: `PR is ${pc.state.toLowerCase()} (live)`, severity: "info" });
   return out;
+}
+
+/** Resume for a Claude Code session reported by the Control hook (Stop / SessionEnd). */
+export function SessionResumeCard({ data }: { data: SessionResume }) {
+  const s = data.session;
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(s.resume_command);
+      setCopied(true);
+      recordResumeActivity(data.workstream.key, "resumed", "Copied claude --resume command");
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
+  const sm = s.summary;
+  return (
+    <section className="rounded-xl border border-amber/40 bg-surface p-5 shadow-[inset_3px_0_0_0_#E8A54B]" data-testid="resume-card" data-resume-kind="session">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-[11px] uppercase tracking-wide text-amber mb-1">Resume · Claude Code session</div>
+          <h2 className="text-[18px] font-semibold leading-6">{data.workstream.title}</h2>
+          <p className="mt-1 text-[12px] text-muted">
+            Session <span className="font-mono">{s.session_id}</span> · {s.ended ? "ended" : "last turn"} {ago(s.last_event_at)}
+            {s.head ? <> · HEAD <span className="font-mono">{s.head.sha.slice(0, 7)}</span> {s.head.subject}</> : null}
+          </p>
+          <div className="mt-3 text-[13px] leading-5" data-testid="session-summary">
+            {sm?.status === "ok" && sm.text ? (
+              <p>
+                {sm.text}
+                <span className="block text-[11px] text-muted mt-1">Summary · Claude, from the session transcript</span>
+              </p>
+            ) : sm?.tail ? (
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-muted">Transcript tail — not summarized{sm.running ? " (Claude summary running…)" : ""}</div>
+                {sm.tail.last_user ? <p className="mt-1"><span className="text-muted">You: </span>“{sm.tail.last_user}”</p> : null}
+                {sm.tail.last_assistant ? <p className="mt-1"><span className="text-muted">Claude: </span>“{sm.tail.last_assistant}”</p> : null}
+              </div>
+            ) : (
+              <p className="text-muted">No session summary yet{sm?.error ? ` — ${sm.error}` : ""}.</p>
+            )}
+          </div>
+          <NextLine next={data.next} />
+        </div>
+      </div>
+
+      <div className="mt-4 text-[12px]">
+        <h4 className="font-medium mb-1">Pick up in your terminal</h4>
+        <div className="flex items-center gap-2">
+          <code className="flex-1 overflow-x-auto rounded border border-border bg-bg px-2 py-1 font-mono text-[12px]" data-testid="session-resume-command">{s.resume_command}</code>
+          <button type="button" className="btn-primary" onClick={() => void copy()} data-testid="session-copy">{copied ? "Copied" : "Copy"}</button>
+        </div>
+      </div>
+
+      <div className="mt-4 text-[12px]" data-testid="session-diff">
+        <h4 className="font-medium mb-1">
+          Uncommitted changes{s.branch ? ` on ${s.branch}` : ""}
+          {s.diff ? ` · ${s.diff.files_changed} file(s) +${s.diff.insertions}/−${s.diff.deletions}${s.diff.untracked ? ` · ${s.diff.untracked} untracked` : ""}` : ""}
+        </h4>
+        {!s.diff ? (
+          <p className="text-muted">Not a git repo (cwd {s.cwd}).</p>
+        ) : s.diff.files_changed === 0 && s.diff.untracked === 0 ? (
+          <p className="text-muted">Working tree clean at the last hook event.</p>
+        ) : (
+          <pre className="overflow-x-auto rounded border border-border bg-bg p-2 font-mono text-[11px] leading-4">
+            {[s.diff.stat || "", ...(s.diff.untracked_files ?? []).map((f) => `?? ${f}`)].filter(Boolean).join("\n")}
+          </pre>
+        )}
+      </div>
+
+      <p className="mt-3 text-[11px] text-muted">{data.selection.reason}</p>
+      {data.selection.others.length > 0 && (
+        <p className="mt-1 text-[11px] text-muted">Also active: {data.selection.others.map((o) => o.title).join(" · ")}</p>
+      )}
+    </section>
+  );
 }

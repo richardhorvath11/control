@@ -564,6 +564,38 @@ curl -sS -X POST 'http://localhost:3000/api/demo/reset?clearInboxes=true'
 ```
 
 
+## Claude Code session hook → Resume
+
+Control can learn about your Claude Code sessions, so /now's **Resume** card can say "you were last in
+`<repo>` on `<branch>`, here's what happened, here's the command to pick it up".
+
+- **Install:** `./scripts/control-doctor --install-hook --dry-run` (preview, writes nothing), then
+  `./scripts/control-doctor --install-hook`. It's an idempotent merge into `~/.claude/settings.json` with a timestamped backup
+  (`settings.json.control-backup-<UTC>`) written before any change. Unparseable settings fail closed (exit 3).
+  `--uninstall-hook` removes only Control's entries. The hook and collector are copied to `~/.control-hook/bin/`.
+- **Events:** `Stop` (end of every assistant turn) and `SessionEnd` (`/exit`, `/clear`, logout, …), both running the same
+  command hook. `Stop` keeps Resume fresh mid-session; `SessionEnd` gives the final state and `reason`.
+- **Hook cost:** `control-session-hook` spools stdin to `~/.control-hook/spool/`, starts the node collector
+  with `setsid nohup` (all output redirected) and exits 0. It takes ~10ms, so it never slows Claude Code down.
+- **Collector:** `scripts/control-session-collect.mjs` adds the repo toplevel/remote slug, branch, HEAD sha+subject,
+  `git diff HEAD` numstat/stat and untracked files, then POSTs to `/api/sessions/activity`. If Control is down or returns 5xx,
+  the event is written to `~/.control-hook/queue/` and replayed, oldest first, on the next successful run or
+  `node ~/.control-hook/bin/control-session-collect.mjs --replay`. A 4xx is renamed to `.rejected` (no retry loop).
+  `CONTROL_BASE_URL` comes from the env or `~/.control-hook/config.json`.
+- **Summary:** for each new event, Control spawns `scripts/control-session-summarize.mjs` in the background. It
+  first writes a labeled **transcript-tail fallback** (last user prompt and last reply, verbatim), then asks
+  `claude -p` using your Pro login: no tools, `--strict-mcp-config`, `--no-session-persistence`, hooks disabled,
+  prompt on stdin, `ANTHROPIC_API_KEY` removed from env. The reply must be strict JSON `{summary,next}`; anything else
+  keeps the fallback and records the error. Fail closed: no fake summary or Next. `CONTROL_SESSION_SUMMARY=fallback` skips
+  Claude; `=off` disables summarizing.
+- **Loops:** Control's own `claude` runs (summarizer, review worker, review runner, doctor) set
+  `CONTROL_HOOK_DISABLE=1`, so they never show up as your sessions.
+- **Resume:** a session wins over the GitHub/Slack-derived workstream only when it is newer than the latest
+  external activity. Test events (`control_test`) are never shown.
+- **API:** `POST /api/sessions/activity` (hook payload), `GET /api/sessions/activity[?session_id=…&include_test=1]`.
+  Data lives in `.control/sessions/<id>.json` + `<id>.summary.json`.
+- **Smoke:** `npx tsx scripts/smoke-session-hook.ts` (hermetic).
+
 ## Standing watchers (V0.6)
 
 Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slack tokens; the host agent runs `gh` / Slack MCP and POSTs into the existing inbox APIs.
