@@ -43,7 +43,6 @@ export async function GET() {
       clientKey: "control-v0-mode",
       watch: {
         repo: watch.repo,
-        pr: watch.pr,
         workstreamId: watch.workstreamId,
         slackWatch: watch.slackWatch,
         slackChannelCount: n,

@@ -15,7 +15,6 @@ export type WatchResponse = {
   ok?: boolean;
   watch?: {
     repo: string;
-    pr: number;
     workstreamId: string;
     teams: string[];
     slackWatch: {
@@ -30,13 +29,13 @@ export type WatchResponse = {
       myUserId?: string;
     };
     configured?: boolean;
+    sources?: { github: boolean; slack: boolean };
   };
   error?: string;
 };
 
 export type WatchFormValues = {
   repo: string;
-  pr: string;
   workstreamId: string;
   teamsText: string;
   surfaces: SurfaceRow[];
@@ -55,8 +54,7 @@ const EMPTY_SURFACE: SurfaceRow = {
 export function blankWatchForm(): WatchFormValues {
   return {
     repo: "",
-    pr: "",
-    workstreamId: "ws-live",
+    workstreamId: "",
     teamsText: "",
     surfaces: [{ ...EMPTY_SURFACE }],
     includeDms: false,
@@ -77,8 +75,7 @@ export function watchResponseToForm(w: NonNullable<WatchResponse["watch"]>): Wat
   }
   return {
     repo: w.repo ?? "",
-    pr: w.pr ? String(w.pr) : "",
-    workstreamId: w.workstreamId || "ws-live",
+    workstreamId: w.workstreamId || "",
     teamsText: (w.teams ?? []).join(", "),
     surfaces: rows,
     includeDms: w.slackWatch?.includeDms === true,
@@ -87,14 +84,14 @@ export function watchResponseToForm(w: NonNullable<WatchResponse["watch"]>): Wat
   };
 }
 
-/** Client-side validation mirroring PUT /api/watch + isWatchConfigured. */
+/**
+ * Client-side validation mirroring PUT /api/watch. Every source is optional: an empty repo
+ * skips GitHub, no surfaces skips Slack, and both empty is fine (sessions + manual items only).
+ */
 export function validateWatchForm(v: WatchFormValues): string | null {
-  if (!v.repo.trim()) return "GitHub repo is required (owner/name)";
-  const surfaceList = v.surfaces
-    .map((c) => c.id.trim())
-    .filter(Boolean);
-  if (surfaceList.length < 1 && !v.includeDms && !v.includeMpims) {
-    return "Add at least one Slack surface, or enable include DMs/MPIMs";
+  const repo = v.repo.trim();
+  if (repo && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+    return "GitHub repo must look like owner/name — or leave it empty to skip GitHub";
   }
   if ((v.includeDms || v.includeMpims) && !v.myUserId.trim()) {
     return "myUserId is required when include DMs or MPIMs is enabled";
@@ -115,10 +112,8 @@ export function watchFormToPutBody(v: WatchFormValues) {
     .split(/[,\s]+/)
     .map((t) => t.trim())
     .filter(Boolean);
-  const prNum = Number.parseInt(v.pr, 10);
   return {
     repo: v.repo.trim(),
-    pr: Number.isFinite(prNum) && prNum > 0 ? prNum : undefined,
     workstreamId: v.workstreamId.trim() || undefined,
     teams,
     slackWatch: {
@@ -167,10 +162,10 @@ export function WatchSetupForm({ values, onChange, compact, disabled }: Props) {
     <div className="space-y-4">
       <label className="block space-y-1">
         <span className="text-[11px] uppercase tracking-wide text-muted">
-          GitHub repo to watch (owner/name) *
+          GitHub repo (owner/name) · optional
         </span>
         <span className="block text-[11px] text-muted leading-4">
-          One repo. Review requests and PR activity here become items in Needs-you.
+          One repo. Review requests and PR activity here become items in Needs-you. Leave empty to skip GitHub.
         </span>
         <input
           className="w-full rounded-lg border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-running/50"
@@ -182,19 +177,6 @@ export function WatchSetupForm({ values, onChange, compact, disabled }: Props) {
         />
       </label>
 
-      <label className="block space-y-1">
-        <span className="text-[11px] uppercase tracking-wide text-muted">
-          Primary PR (optional)
-        </span>
-        <input
-          className="w-full rounded-lg border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-running/50"
-          value={values.pr}
-          onChange={(e) => patch({ pr: e.target.value })}
-          placeholder="32"
-          disabled={disabled}
-          data-testid="watch-pr"
-        />
-      </label>
 
       {!compact && (
         <>
@@ -227,7 +209,7 @@ export function WatchSetupForm({ values, onChange, compact, disabled }: Props) {
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-[11px] uppercase tracking-wide text-muted">
-            Slack channels to watch
+            Slack channels to watch · optional
           </span>
           <button
             type="button"
@@ -240,7 +222,7 @@ export function WatchSetupForm({ values, onChange, compact, disabled }: Props) {
         </div>
         <p className="text-[11px] text-muted leading-4">
           Paste a channel ID (C…), or a DM (D…) / group DM ID, plus a display name.
-          Control only reads these; it never posts to them.
+          Control only reads these; it never posts to them. Leave empty to skip Slack.
         </p>
         {values.surfaces.map((ch, i) => (
           <div key={i} className="flex flex-wrap gap-2 items-center">

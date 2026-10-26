@@ -64,7 +64,7 @@ Goal: get the user to "you're live" with Control, or to an exact, short list of 
 - The doctor never reads stdin (`exec </dev/null`), so it behaves the same in a terminal, a pty, CI, or `claude -p`.
 - Live PR reviews: the review-worker fetches `gh pr view`/`gh pr diff` itself and passes the diff to
   `claude -p`, so headless Claude never needs Bash permission. If gh can't fetch the diff, the job fails
-  closed ("could not fetch PR diff via gh"). There's no fake review. Review page → **Review PR #N** kicks the primary PR.
+  closed ("could not fetch PR diff via gh"). There's no fake review. Review page → **Review PR #N** kicks a review for that PR.
 
 ## If the doctor itself won't run
 

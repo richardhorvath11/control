@@ -12,7 +12,6 @@ From `.control/watch.json` (see `watch.example.json`) — **`slackWatch` only** 
 | Field | Notes |
 |-------|-------|
 | `repo` | `owner/name` — only PR URLs for this repo apply as `pr_link` |
-| `pr` | Primary watched PR (GitHub ticks) |
 | `slackWatch.surfaces` | `[{ id, name?, kind: channel\|im\|mpim, prLinks }]` — poll each |
 | `slackWatch.includeDms` | When true, fetch IMs involving `myUserId` via Slack MCP |
 | `slackWatch.includeMpims` | When true, fetch MPIMs involving `myUserId` |

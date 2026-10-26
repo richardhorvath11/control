@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   ensureWatchConfig,
+  hasGithubSource,
+  hasSlackSource,
   isWatchConfigured,
   normalizeWatch,
+  validateRepo,
   validateSlackWatch,
   writeWatchConfig,
   type WatchConfig,
@@ -14,12 +17,12 @@ export const runtime = "nodejs";
 function watchPayload(watch: WatchConfig) {
   return {
     repo: watch.repo,
-    pr: watch.pr,
     workstreamId: watch.workstreamId,
     teams: watch.teams,
     slackWatch: watch.slackWatch,
     surfaceCount: watch.slackWatch.surfaces.length,
     configured: isWatchConfigured(watch),
+    sources: { github: hasGithubSource(watch), slack: hasSlackSource(watch) },
   };
 }
 
@@ -39,7 +42,9 @@ export async function GET() {
 }
 
 /**
- * PUT /api/watch — persist BYO Live setup (repo, optional pr, teams, slackWatch).
+ * PUT /api/watch — persist BYO Live setup. Every source is optional: repo may be empty
+ * (GitHub skipped), slackWatch may have no surfaces (Slack skipped), or both (Live runs on
+ * Claude sessions + manual items). A legacy `pr` in the body is ignored.
  * Demo / Load demo never calls this — watch on disk is preserved.
  */
 export async function PUT(req: NextRequest) {
@@ -54,18 +59,16 @@ export async function PUT(req: NextRequest) {
   }
 
   const input = body as WatchConfigInput;
-  if (typeof input.repo !== "string" || !input.repo.trim()) {
-    return NextResponse.json(
-      { error: "repo is required (owner/name)" },
-      { status: 400 }
-    );
+  if (input.repo !== undefined && typeof input.repo !== "string") {
+    return NextResponse.json({ error: "repo must be a string (owner/name) or empty" }, { status: 400 });
   }
+  const repoErr = validateRepo(typeof input.repo === "string" ? input.repo : "");
+  if (repoErr) return NextResponse.json({ error: repoErr }, { status: 400 });
 
   try {
     const existing = await ensureWatchConfig();
     const next = normalizeWatch({
-      repo: input.repo,
-      pr: typeof input.pr === "number" ? input.pr : existing.pr,
+      repo: typeof input.repo === "string" ? input.repo : existing.repo,
       workstreamId:
         typeof input.workstreamId === "string" && input.workstreamId.trim()
           ? input.workstreamId
@@ -78,16 +81,6 @@ export async function PUT(req: NextRequest) {
       slackPrChannelId: input.slackPrChannelId,
       slackPrChannelName: input.slackPrChannelName,
     });
-
-    if (!isWatchConfigured(next)) {
-      return NextResponse.json(
-        {
-          error:
-            "Provide slackWatch with ≥1 surface, or includeDms/includeMpims (myUserId required when either include* is true)",
-        },
-        { status: 400 }
-      );
-    }
 
     const swErr = validateSlackWatch(next.slackWatch);
     if (swErr) {

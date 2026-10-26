@@ -42,15 +42,12 @@ WATCH_PATH="$CONTROL_DIR/watch.json"
 SNAP_DIR="$CONTROL_DIR/pr-snapshots"
 mkdir -p "$SNAP_DIR"
 
-if [[ -z "$REPO" || -z "$PR" ]]; then
-  if [[ -f "$WATCH_PATH" ]]; then
-    REPO="$(python3 -c 'import json,sys; w=json.load(open(sys.argv[1])); print((w.get("repo") or "").strip())' "$WATCH_PATH")"
-    PR="$(python3 -c 'import json,sys; w=json.load(open(sys.argv[1])); print(w.get("pr") or "")' "$WATCH_PATH")"
-  fi
+if [[ -z "$REPO" && -f "$WATCH_PATH" ]]; then
+  REPO="$(python3 -c 'import json,sys; w=json.load(open(sys.argv[1])); print((w.get("repo") or "").strip())' "$WATCH_PATH")"
 fi
 
 if [[ -z "$REPO" || -z "$PR" ]]; then
-  echo "error: need --repo owner/name --pr N (or watch.json with repo+pr)" >&2
+  echo "error: need --pr N (and --repo owner/name, or a repo in watch.json)" >&2
   exit 1
 fi
 

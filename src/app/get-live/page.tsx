@@ -18,6 +18,13 @@ import {
  * Load Monday demo → Demo + seed; does not wipe watch.json.
  * No Slack / GitHub / Anthropic tokens collected.
  */
+function sourcesSummary(w: NonNullable<WatchResponse["watch"]>): string {
+  const n = (w.slackWatch?.surfaces?.length ?? 0) + (w.slackWatch?.includeDms || w.slackWatch?.includeMpims ? 1 : 0);
+  const gh = w.repo ? `GitHub ${w.repo}` : "GitHub skipped";
+  const sl = n ? `Slack ${w.slackWatch?.surfaces?.length ?? 0} surface(s)` : "Slack skipped";
+  return `Saved · ${gh} · ${sl} · Claude sessions + manual items`;
+}
+
 export default function GetLivePage() {
   const router = useRouter();
   const setSeedLiveMode = useControlStore((s) => s.setSeedLiveMode);
@@ -53,15 +60,13 @@ export default function GetLivePage() {
         body: JSON.stringify(watchFormToPutBody(values)),
       });
       const data = (await res.json()) as WatchResponse;
-      if (!res.ok || !data.watch?.configured) {
+      if (!res.ok || !data.watch) {
         // Fail closed — no partial save / no mode flip.
         setError(data.error ?? "Watch not saved — fix validation and retry");
         setSaving(false);
         return;
       }
-      setStatus(
-        `Saved · ${data.watch.slackWatch?.surfaces?.length ?? 0} surface(s)`
-      );
+      setStatus(sourcesSummary(data.watch));
       // One step: persist watch + Switch to Live (wipes seed Needs-you).
       setSeedLiveMode("live");
       router.replace("/get-live/workers");
@@ -78,8 +83,8 @@ export default function GetLivePage() {
   };
 
   const skipWizard = () => {
-    // Escape hatch (chip 4): leave without touching watch.json.
     if (!configured) return;
+    // Escape hatch (chip 4): leave without touching watch.json.
     router.replace("/now");
   };
 
@@ -94,13 +99,18 @@ export default function GetLivePage() {
             Get Live
           </div>
           <h1 className="text-[22px] font-semibold tracking-tight">
-            Point Control at your repo and Slack
+            Choose what Control watches
           </h1>
           <p className="text-[13px] text-muted mt-2 leading-5">
-            Control <strong className="text-text">watches</strong> one GitHub repo plus
+            Control can <strong className="text-text">watch</strong> one GitHub repo and
             the Slack channels, DMs and group DMs you choose. What it finds becomes
             items in <strong className="text-text">Needs-you</strong> and{" "}
             <strong className="text-text">Review</strong>.
+          </p>
+          <p className="text-[13px] mt-2 leading-5 rounded-lg border border-running/30 px-3 py-2" data-testid="get-live-optional">
+            <strong>Every source is optional.</strong> Use GitHub only, Slack only, or
+            neither — your Claude Code sessions and manual items (⌘K) always feed Live.
+            Leave a field empty to skip that source; you can add it later in Settings.
           </p>
           <ul className="text-[12px] text-muted mt-2 leading-5 list-disc pl-5" data-testid="get-live-promises">
             <li>Control never posts notifications to Slack.</li>
@@ -149,18 +159,14 @@ export default function GetLivePage() {
                 title={
                   configured
                     ? "Leave wizard without changing watch.json"
-                    : "Configure watch or Load Monday demo to leave"
+                    : "Nothing saved yet — use Continue → Live (works with no sources)"
                 }
                 data-testid="get-live-skip"
               >
                 Skip → Now
               </button>
             </div>
-            {!loading && !configured && (
-              <p className="text-[11px] text-muted" data-testid="get-live-skip-hint">
-                Skip is available after watch is configured — or use Load Monday demo.
-              </p>
-            )}
+
 
             {status && (
               <div className="text-[12px] text-running" data-testid="watch-status">

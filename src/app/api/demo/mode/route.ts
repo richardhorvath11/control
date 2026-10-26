@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
     ok: true,
     mode,
     clientKey: "control-v0-mode",
-    watch: { repo: watch.repo, pr: watch.pr },
+    watch: { repo: watch.repo },
     activeFollowCount: follows.length,
     instruction:
       mode === "demo"

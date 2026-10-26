@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # github-watcher-tick.sh — one standing-watcher tick for Control (V0.6 + V0.7 chip 4 snapshots)
 #
-# Reads .control/watch.json + .control/pr-follows.json, polls primary PR and
-# active Slack-discovered follows (same repo only) via `gh`, diffs per-PR
+# Reads .control/watch.json + .control/pr-follows.json, polls the active
+# Slack-discovered follows (same repo only) via `gh`, diffs per-PR
 # snapshots, and POSTs only *new* canonical events to
 # ${CONTROL_BASE_URL:-http://localhost:3000}/api/github/inbox.
 #
 # Control holds no GitHub token — credentials stay with `gh` on this host.
 #
 # Chip 4: follows have a hard 48h TTL (refreshed on Slack re-link), max 5
-# active (oldest expires_at dropped). Primary watch.pr is never a follow.
-# Empty follows → chip 1 single-PR behavior.
+# active (oldest expires_at dropped). There is no "primary PR" any more: a
+# legacy watch.pr key is ignored (Control's watch.json migration drops it).
+# GitHub is an optional source: no watch.json or no repo → clean no-op (exit 0).
 #
 # Usage:
 #   ./scripts/github-watcher-tick.sh
@@ -68,26 +69,9 @@ if [[ "$DRY_RUN" == "1" && ! -f "$WATCH_PATH" ]]; then
   WATCH_PATH="$DRY_TMP/watch.json"
 fi
 if [[ ! -f "$WATCH_PATH" ]]; then
-  if [[ -f "$WATCH_EXAMPLE" ]]; then
-    # Strip _comment_* keys for a clean runtime config
-    python3 - "$WATCH_EXAMPLE" "$WATCH_PATH" <<'PY'
-import json, sys
-src, dst = sys.argv[1], sys.argv[2]
-with open(src, encoding="utf-8") as f:
-    data = json.load(f)
-clean = {k: v for k, v in data.items() if not str(k).startswith("_")}
-# Intentional default: teams []
-if "teams" not in clean or not isinstance(clean.get("teams"), list):
-    clean["teams"] = []
-with open(dst, "w", encoding="utf-8") as f:
-    json.dump(clean, f, indent=2)
-    f.write("\n")
-print(f"created {dst} from watch.example.json", file=sys.stderr)
-PY
-  else
-    echo "error: missing $WATCH_PATH and $WATCH_EXAMPLE" >&2
-    exit 1
-  fi
+  # Every source is optional: no watch.json means GitHub isn't configured. Never copy the example.
+  echo "skipped: no $WATCH_PATH — GitHub source not configured (optional); nothing to poll"
+  exit 0
 fi
 
 # --- load watch + follows + previous state, fetch PRs, diff, post ---
@@ -357,7 +341,7 @@ if not isinstance(watch, dict):
     sys.exit(1)
 
 repo = str(watch.get("repo") or "").strip()
-primary_pr = watch.get("pr")
+primary_pr = None  # "primary PR" removed; legacy watch.pr is ignored
 primary_ws = str(watch.get("workstreamId") or "").strip() or None
 teams_raw = watch.get("teams") if isinstance(watch.get("teams"), list) else []
 watch_teams = {str(t).strip() for t in teams_raw if str(t).strip()}
@@ -375,9 +359,10 @@ if not slack_ch:
     slack_ch = str(watch.get("slackPrChannelId") or "").strip()
 slack_channel_count = len(surfaces) if surfaces else (1 if slack_ch else 0)
 
-if not repo or not isinstance(primary_pr, int):
-    print("error: watch.json needs string repo and numeric pr", file=sys.stderr)
-    sys.exit(1)
+if not repo:
+    # GitHub is optional (Slack-only, or sessions + manual only). Clean no-op.
+    print("skipped: no GitHub repo in watch.json — GitHub source is optional; nothing to poll")
+    sys.exit(10)
 
 tick_at = now_iso()
 now_ms = datetime.now(timezone.utc).timestamp()
@@ -417,15 +402,8 @@ if purged or ignored_repo or len(active_follows) != len(raw_follows):
     write_json(FOLLOWS_PATH, {"follows": active_follows})
 
 # Build PR list: [watch.pr, ...activeFollowPrs] deduped, same repo only
-pr_jobs: list[dict[str, Any]] = [
-    {
-        "pr": primary_pr,
-        "kind": "primary",
-        "workstream_id": primary_ws,
-        "follow": None,
-    }
-]
-seen_prs = {primary_pr}
+pr_jobs: list[dict[str, Any]] = []
+seen_prs: set[int] = set()
 for f in active_follows:
     fpr = int(f["pr"])
     if fpr in seen_prs:
@@ -442,7 +420,7 @@ for f in active_follows:
 
 print(
     f"tick targets repo={repo} prs={[j['pr'] for j in pr_jobs]} "
-    f"(primary={primary_pr}, follows={len(active_follows)})"
+    f"(follows={len(active_follows)})"
 )
 
 _loaded_primary = load_json(STATE_PATH, default=None)
@@ -836,12 +814,20 @@ PY
 
 # V0.9 chip 2 / V0.8 chip 5: heartbeat for Agents board (HTTP only).
 TICK_EXIT=$?
+if [[ "$TICK_EXIT" -eq 10 ]]; then
+  # Skipped (no repo): report idle, not error, and exit 0.
+  if [[ "$DRY_RUN" != "1" ]]; then
+    curl -sS -X PUT "${CONTROL_BASE_URL%/}/api/watchers/status" -H 'Content-Type: application/json' \
+      -d '{"id":"github-watch","status":"idle","last_action":"skipped: no GitHub repo (optional)"}' >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
 STATUS_URL="${CONTROL_BASE_URL%/}/api/watchers/status"
 if [[ "$DRY_RUN" != "1" ]]; then
   if [[ "$TICK_EXIT" -eq 0 ]]; then
     curl -sS -X PUT "$STATUS_URL" \
       -H 'Content-Type: application/json' \
-      -d '{"id":"github-watch","status":"ticking","last_action":"diffed primary + follows"}' \
+      -d '{"id":"github-watch","status":"ticking","last_action":"diffed follows"}' \
       >/dev/null 2>&1 || true
   else
     curl -sS -X PUT "$STATUS_URL" \

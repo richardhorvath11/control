@@ -37,15 +37,15 @@ Env:
 
 1. Ensure `.control/` exists. If `.control/watch.json` is missing, copy from `watch.example.json` (strips `_comment_*`, keeps `teams: []`).
 2. Load **follows** from `.control/pr-follows.json` (chip 4). **Purge** any row with `expires_at < now`. Ignore follows whose `repo !== watch.repo`. Never treat `watch.pr` as a follow.
-3. Build PR list: **`[watch.pr, ...activeFollowPrs]`** (deduped, same repo only). Empty follows → chip 1 single-PR behavior.
+3. Build PR list: **active follows** (deduped, same repo only). No `repo` in watch.json → tick prints `skipped` and exits 0 (GitHub is optional). No follows → quiet noop.
 4. For **each** PR via **`gh pr view`**: head SHA, CI rollup, `reviewRequests`, `CHANGES_REQUESTED` reviews.
 5. Per-PR snapshot:
-   - **Primary** → `.control/github-watcher-state.json`
+   - Tick bookkeeping (`last_tick`) → `.control/github-watcher-state.json`
    - **Follow** → that row’s fields inside `pr-follows.json`
 6. **Baseline-on-first-see** per PR: write snapshot, **POST nothing**. Use `--force-post` / `WATCHER_FORCE_POST=1` to post instead.
 7. Later sees: diff → canonical `GitHubInboxEvent` payloads → `POST` only **new** events to `${CONTROL_BASE_URL}/api/github/inbox`.
-8. Event `workstream_id`: primary → `watch.workstreamId`; follow → follow’s `workstreamId` (ephemeral `ws-review-…`).
-9. Quiet **noop** when nothing changed **across all PRs** — update primary `last_tick` only.
+8. Event `workstream_id`: follow’s `workstreamId` (ephemeral `ws-review-…`).
+9. Quiet **noop** when nothing changed **across all PRs** — update `last_tick` only.
 10. If Control is unreachable: warn, exit non-zero for failed posts, and **do not fully advance** snapshot markers so the next tick retries.
 
 ### Diff → events
@@ -61,14 +61,12 @@ Env:
 
 Event shapes match `src/lib/github-inbox.ts` (`GitHubInboxEvent`). Shared cap stays `NEEDS_YOU_EXTERNAL_CAP = 5` inside Control (not enforced by the watcher). Routing / coalesce / checkpoint for followed PRs reuse the existing GitHub inbox path (chips 2–3).
 
-## Primary state (`.control/github-watcher-state.json`)
+## Tick state (`.control/github-watcher-state.json`)
 
 ```json
 {
   "last_tick": "2026-09-08T01:30:00.000Z",
   "repo": "richardhorvath11/battle-buddy",
-  "pr": 32,
-  "workstreamId": "ws-cred",
   "slackWatchSurfaceId": "C0BVCSA4T2P",
   "watch_teams": [],
   "head_sha": "19f610a…",
@@ -117,9 +115,8 @@ Sibling gitignored file (keeps Slack upsert off the primary snapshot file). Slac
 | **TTL** | **48 hours** from first discover, or from last Slack re-link **refresh** |
 | **Cap** | Max **5** active follows; adding a 6th drops the oldest by `expires_at` |
 | **Refresh** | New Slack `pr_link` for an already-followed PR extends `expires_at` by another 48h from now |
-| **Primary** | `watch.pr` is **never** stored in `follows[]` |
 | **Repo** | Same repo only — follow with `repo !== watch.repo` is ignored |
-| **How Slack creates** | On successful Slack inbox apply for a non-primary PR, Control upserts a follow (`src/lib/pr-follows.ts`) with the ephemeral workstream id |
+| **How Slack creates** | On successful Slack inbox apply for a PR in `watch.repo`, Control upserts a follow (`src/lib/pr-follows.ts`) with the ephemeral workstream id |
 
 Smoke (unit): `npx tsx scripts/smoke-pr-follows.ts`.
 
@@ -129,7 +126,7 @@ Smoke (unit): `npx tsx scripts/smoke-pr-follows.ts`.
 # Quiet ticks (Control optional with --dry-run)
 ./scripts/github-watcher-tick.sh --dry-run
 ./scripts/github-watcher-tick.sh --dry-run
-# Expect: targets primary (+ follows if any); noop / baseline; last_tick updates
+# Expect: targets active follows (none → noop; no repo → skipped); noop / baseline; last_tick updates
 ```
 
 ## Slack companion
@@ -147,7 +144,7 @@ After each tick, PUT:
 ```bash
 curl -sS -X PUT "${CONTROL_BASE_URL:-http://localhost:3000}/api/watchers/status" \
   -H 'Content-Type: application/json' \
-  -d '{"id":"github-watch","status":"ticking","last_action":"diffed primary + follows"}'
+  -d '{"id":"github-watch","status":"ticking","last_action":"diffed follows"}'
 ```
 
 Never open `.control/watcher-status.json` from the watcher — HTTP only.

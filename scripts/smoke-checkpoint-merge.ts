@@ -13,7 +13,6 @@ import { routeSlackEvent } from "../src/lib/slack-inbox";
 
 const watch: WatchConfig = {
   repo: "richardhorvath11/battle-buddy",
-  pr: 32,
   workstreamId: "ws-cred",
   teams: ["platform"],
   slackWatch: {
@@ -200,13 +199,9 @@ const slackPrimary = routeSlackEvent(
   },
   watch
 );
-assert(
-  !!slackPrimary.workstreamPatch?.checkpointLine?.includes(
-    "Next: review that PR."
-  ),
-  "5 slack primary Latest"
-);
-assert(slackPrimary.newWorkstream === null, "5 no ephemeral for primary");
+// Primary PR removed: PR #32 is treated like any other Slack-linked PR (own ephemeral review stream).
+assert(slackPrimary.workstreamPatch === null, "5 former-primary PR: no patch onto a fixed workstream");
+assert(!!slackPrimary.newWorkstream?.ephemeral && slackPrimary.newWorkstream.id.endsWith("-32"), "5 former-primary PR gets ephemeral ws-review-*");
 
 const slackOther = routeSlackEvent(
   {

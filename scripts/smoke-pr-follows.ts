@@ -23,7 +23,6 @@ import type { WatchConfig } from "../src/lib/github-inbox";
 
 const watch: WatchConfig = {
   repo: "richardhorvath11/battle-buddy",
-  pr: 32,
   workstreamId: "ws-cred",
   teams: [],
   slackWatch: {
@@ -109,12 +108,10 @@ assert(
     watch,
     now: NOW,
   });
-  assert(r.action === "skipped", "7: primary watch.pr skipped");
-  assert(r.follows.length === 1, "7: still one follow (no primary row)");
-  assert(
-    !r.follows.some((f) => f.pr === 32),
-    "7: primary never in follows[]"
-  );
+  // Primary PR removed: #32 is followed like any other Slack-linked PR.
+  assert(r.action !== "skipped", "7: former primary PR no longer skipped");
+  assert(r.follows.length === 2, "7: two follows now");
+  assert(r.follows.some((f) => f.pr === 32), "7: #32 is a normal follow");
 }
 
 // --- 4: refresh TTL on second Slack link; still one row ---

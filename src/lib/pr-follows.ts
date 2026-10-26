@@ -7,7 +7,7 @@
  *
  * Locked: TTL 48h from first discover (or last Slack re-link refresh);
  * max 5 active follows (drop oldest expires_at when adding a 6th);
- * primary watch.pr is never stored as a follow; same repo only.
+ * Same repo only (there is no "primary PR" any more).
  */
 import { promises as fs } from "fs";
 import path from "path";
@@ -93,10 +93,10 @@ export function purgeExpiredFollows(
 }
 
 /**
- * Upsert a Slack-discovered follow for a non-primary PR on watch.repo.
+ * Upsert a Slack-discovered follow for a PR on watch.repo.
  * - Same PR → refresh expires_at (+48h from now), update slack_event_id.
  * - New PR → insert; if > FOLLOW_MAX_ACTIVE, drop oldest by expires_at.
- * - Primary watch.pr → no-op (never stored).
+ * - (no primary-PR exclusion; removed)
  * - Wrong repo → no-op (caller should already ignore).
  */
 export function upsertFollowRecord(
@@ -119,13 +119,6 @@ export function upsertFollowRecord(
       follows,
       action: "skipped",
       reason: `repo ${repo} != watch.repo ${opts.watch.repo}`,
-    };
-  }
-  if (pr === opts.watch.pr) {
-    return {
-      follows,
-      action: "skipped",
-      reason: "primary watch.pr is never stored as a follow",
     };
   }
 
@@ -177,7 +170,7 @@ export function upsertFollowRecord(
 }
 
 /**
- * Server-side upsert used by Slack inbox apply when a non-primary PR
+ * Server-side upsert used by Slack inbox apply when a PR
  * creates/updates an ephemeral workstream.
  */
 export async function upsertFollowFromSlackApply(opts: {

@@ -628,20 +628,8 @@ export function routeSlackEvent(
   let workstreamPatch: SlackWorkstreamPatch | null = null;
   let newWorkstream: SlackNewWorkstream | null = null;
 
-  if (event.pr_number === watch.pr) {
-    const checkpointLine = `Slack ask in ${channelLabel} linked ${repoPr}. Next: review that PR.`;
-    workstreamId = watch.workstreamId;
-    workstreamPatch = {
-      id: workstreamId,
-      changedEntry: `Slack review ask in ${channelLabel} · PR #${event.pr_number}`,
-      checkpointLine,
-      phase: "Human review",
-      status: "blocked-on-you",
-      waitingOn: "you",
-      next: `Review PR #${event.pr_number} from Slack ask`,
-      lastActive: "just now",
-    };
-  } else {
+  {
+    // Every Slack-linked PR gets its own ephemeral review workstream (no "primary PR" any more).
     const checkpointLine = `Slack ask in ${channelLabel} linked ${repoPr}. Ephemeral review stream.`;
     workstreamId = `ws-review-${event.repo.replace(/[^a-zA-Z0-9]+/g, "-")}-${event.pr_number}`;
     newWorkstream = {
@@ -815,8 +803,8 @@ export async function acceptSlackInboxEvent(
   };
   await writeSlackInboxItem(item);
 
-  // Chip 4: upsert PR follow for non-primary Slack-discovered PRs (server-side).
-  // Primary watch.pr is never stored as a follow; wrong repo already ignored above.
+  // Chip 4: upsert PR follow for Slack-discovered PRs on watch.repo (server-side).
+  // Wrong repo already ignored above.
   // Plain message events never create follows (chip 3 Needs-you only).
   if (event.type === "pr_link") {
     const followWsId =
@@ -825,7 +813,6 @@ export async function acceptSlackInboxEvent(
       effects.workstreamPatch?.id;
     if (
       followWsId &&
-      event.pr_number !== watch.pr &&
       event.repo.toLowerCase() === watch.repo.toLowerCase()
     ) {
       await upsertFollowFromSlackApply({

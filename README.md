@@ -197,15 +197,13 @@ Control holds **no GitHub token**. Live credentials stay with GitHub MCP / `gh` 
 | | |
 |--|--|
 | Template (committed) | `watch.example.json` |
-| Runtime (gitignored) | `.control/watch.json` — created from the example on first API use if missing |
+| Runtime (gitignored) | `.control/watch.json` — missing file = empty config (no sources). **Every source is optional**: empty `repo` skips GitHub, no surfaces skips Slack, both empty = Claude sessions + manual items only. Legacy `pr` / seed `workstreamId` keys are dropped on load (rest kept). |
 
 Default fields (`slackWatch` — V0.8 chip 2):
 
 ```json
 {
   "repo": "richardhorvath11/battle-buddy",
-  "pr": 32,
-  "workstreamId": "ws-cred",
   "teams": [],
   "slackWatch": {
     "surfaces": [
@@ -649,11 +647,11 @@ Documented poll loop (scripts + docs). Control still holds **no** GitHub or Slac
 ./scripts/github-watcher-tick.sh --dry-run
 ```
 
-Each tick: read watch + **active follows** → `gh` each PR (primary + follows, same repo) → per-PR diff → `POST` only **new** events to `/api/github/inbox`. Quiet noop updates `last_tick` only when nothing changed across all PRs. Baseline-on-first-see per PR. `teams: []` ⇒ never emit team `review.requested`. Cap remains `NEEDS_YOU_EXTERNAL_CAP = 5` inside Control.
+Each tick: read watch + **active follows** → `gh` each followed PR (same repo; no repo = skipped, exit 0) → per-PR diff → `POST` only **new** events to `/api/github/inbox`. Quiet noop updates `last_tick` only when nothing changed across all PRs. Baseline-on-first-see per PR. `teams: []` ⇒ never emit team `review.requested`. Cap remains `NEEDS_YOU_EXTERNAL_CAP = 5` inside Control.
 
 ### Slack-discovered follows (chip 4)
 
-When Slack inbox applies a `pr_link` for `watch.repo` with `pr_number ≠ watch.pr`, Control upserts a **follow** (48h TTL, max 5, refresh on re-link). Primary `watch.pr` is never a follow. The GitHub tick polls primary + active follows; expired rows drop off. No org-wide, no NLP without URL. See `scripts/github-watcher.md`.
+When Slack inbox applies a `pr_link` for `watch.repo`, Control upserts a **follow** (48h TTL, max 5, refresh on re-link). The GitHub tick polls active follows only — there is no "primary PR" field any more.
 
 ### Slack MCP → helper
 

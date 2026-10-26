@@ -44,7 +44,6 @@ assert(WATCHER_STALE_MS >= 2 * 60 * 1000 && WATCHER_STALE_MS <= 5 * 60 * 1000, "
 
 const watch: WatchConfig = {
   repo: "richardhorvath11/battle-buddy",
-  pr: 32,
   workstreamId: "ws-cred",
   teams: [],
   slackWatch: {

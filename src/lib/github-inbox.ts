@@ -86,8 +86,9 @@ export interface SlackWatch {
 }
 
 export interface WatchConfig {
+  /** Optional GitHub repo (owner/name). "" = GitHub source skipped (watcher no-ops). */
   repo: string;
-  pr: number;
+  /** Optional workstream id stamped on GitHub events without one. "" = none (never a Demo seed id). */
   workstreamId: string;
   /** Team/CODEOWNERS slugs that may create Needs-you on review.requested */
   teams: string[];
@@ -154,30 +155,26 @@ export interface StoredGithubInboxItem {
   effects: GithubRoutingEffects | null;
 }
 
+/** Every source is optional: the default watch has no repo and no Slack surfaces. */
 const DEFAULT_WATCH: WatchConfig = {
-  repo: "richardhorvath11/battle-buddy",
-  pr: 32,
-  workstreamId: "ws-cred",
+  repo: "",
+  workstreamId: "",
   teams: [],
   slackWatch: {
-    surfaces: [
-      {
-        id: "C0BVCSA4T2P",
-        name: "#control-e2e",
-        kind: "channel",
-        prLinks: true,
-      },
-      {
-        id: "C0BINFRA000",
-        name: "#infra-prs",
-        kind: "channel",
-        prLinks: true,
-      },
-    ],
+    surfaces: [],
     includeDms: false,
     includeMpims: false,
   },
 };
+
+/** Demo seed workstream ids — never valid as a Live watch.workstreamId (stripped on load). */
+const SEED_WORKSTREAM_IDS = new Set(["ws-cred", "ws-ranking", "ws-runbook"]);
+
+/** Keys removed from watch.json by the graceful migration (primary PR is gone; seed ws ids never apply to Live). */
+export function hasRemovedWatchKeys(input: Record<string, unknown> | null | undefined): boolean {
+  if (!input || typeof input !== "object") return false;
+  return "pr" in input || (typeof input.workstreamId === "string" && SEED_WORKSTREAM_IDS.has(input.workstreamId.trim()));
+}
 
 function safeId(id: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/.test(id);
@@ -205,8 +202,9 @@ export async function ensureWatchConfig(): Promise<WatchConfig> {
     const raw = await fs.readFile(WATCH_PATH, "utf8");
     const parsed = JSON.parse(raw) as WatchConfigInput;
     const watch = normalizeWatch(parsed);
-    // One-shot clean migrate: drop slackPrChannels / scalar keys from disk.
-    if (hasLegacySlackKeys(parsed)) {
+    // One-shot clean migrate: drop slackPrChannels / scalar keys, the removed primary-PR `pr`
+    // key and a Demo seed workstreamId from disk. Everything else is kept.
+    if (hasLegacySlackKeys(parsed) || hasRemovedWatchKeys(parsed as Record<string, unknown>)) {
       return writeWatchConfig(watch);
     }
     return watch;
@@ -215,15 +213,8 @@ export async function ensureWatchConfig(): Promise<WatchConfig> {
     if (code !== "ENOENT") throw err;
   }
 
-  let fromExample: WatchConfigInput | null = null;
-  try {
-    const raw = await fs.readFile(WATCH_EXAMPLE_PATH, "utf8");
-    fromExample = JSON.parse(raw) as WatchConfigInput;
-  } catch {
-    fromExample = null;
-  }
-
-  const watch = normalizeWatch(fromExample ?? DEFAULT_WATCH);
+  // No watch.json yet: start empty (no repo, no Slack). watch.example.json is documentation only.
+  const watch = normalizeWatch(DEFAULT_WATCH);
   return writeWatchConfig(watch);
 }
 
@@ -232,6 +223,8 @@ export async function ensureWatchConfig(): Promise<WatchConfig> {
  * Accepts legacy slackPrChannels / scalars for one-shot migrate only (not kept).
  */
 export type WatchConfigInput = Partial<WatchConfig> & {
+  /** @deprecated removed "primary PR" — accepted on read, dropped on write (graceful migrate). */
+  pr?: unknown;
   /** @deprecated one-shot migrate → slackWatch.surfaces */
   slackPrChannels?: { id?: string; name?: string }[];
   /** @deprecated one-shot migrate → slackWatch.surfaces */
@@ -337,12 +330,8 @@ function normalizeSlackWatch(input: WatchConfigInput | null): SlackWatch {
   }
 
   if (surfaces.length === 0 && !raw) {
-    // No slackWatch and no legacy → default surfaces
-    return {
-      surfaces: DEFAULT_WATCH.slackWatch.surfaces.map((s) => ({ ...s })),
-      includeDms: false,
-      includeMpims: false,
-    };
+    // No slackWatch and no legacy → Slack is simply not configured (optional source).
+    return { surfaces: [], includeDms: false, includeMpims: false };
   }
 
   const includeDms = raw?.includeDms === true;
@@ -381,17 +370,30 @@ export function validateSlackWatch(sw: SlackWatch): string | null {
 }
 
 /**
- * Watch is "configured" for Live when repo is set and at least one surface
- * or DM/MPIM include flag is on. Fixtures/seed stay for internal test only.
+ * Watch is "configured" when ANY source is set: a GitHub repo, or ≥1 Slack surface, or DM/MPIM.
+ * Every source is optional — no repo is fine (Slack only), and Live also works with neither
+ * (Claude sessions + manual items); that case is simply "not configured" here.
  */
 export function isWatchConfigured(
   watch: Pick<WatchConfig, "repo" | "slackWatch">
 ): boolean {
+  return hasGithubSource(watch) || hasSlackSource(watch);
+}
+
+export function hasGithubSource(watch: Pick<WatchConfig, "repo">): boolean {
+  return !!watch.repo.trim();
+}
+
+export function hasSlackSource(watch: Pick<WatchConfig, "slackWatch">): boolean {
   const sw = watch.slackWatch;
-  return (
-    !!watch.repo.trim() &&
-    (sw.surfaces.length >= 1 || sw.includeDms || sw.includeMpims)
-  );
+  return sw.surfaces.length >= 1 || sw.includeDms || sw.includeMpims;
+}
+
+/** Repo is optional; when given it must look like owner/name. */
+export function validateRepo(repo: string): string | null {
+  const r = repo.trim();
+  if (!r) return null;
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(r) ? null : "repo must look like owner/name (or be empty to skip GitHub)";
 }
 
 /** Serialize for disk / API — slackWatch only (no legacy keys). */
@@ -410,8 +412,7 @@ export function serializeWatch(watch: WatchConfig): Record<string, unknown> {
   if (sw.myUserId) slackWatch.myUserId = sw.myUserId;
   return {
     repo: watch.repo,
-    pr: watch.pr,
-    workstreamId: watch.workstreamId,
+    ...(watch.workstreamId ? { workstreamId: watch.workstreamId } : {}),
     teams: watch.teams,
     slackWatch,
   };
@@ -437,14 +438,8 @@ export function normalizeWatch(input: WatchConfigInput | null): WatchConfig {
     typeof input?.repo === "string" && input.repo.trim()
       ? input.repo.trim()
       : DEFAULT_WATCH.repo;
-  const pr =
-    typeof input?.pr === "number" && Number.isFinite(input.pr)
-      ? Math.trunc(input.pr)
-      : DEFAULT_WATCH.pr;
-  const workstreamId =
-    typeof input?.workstreamId === "string" && input.workstreamId.trim()
-      ? input.workstreamId.trim()
-      : DEFAULT_WATCH.workstreamId;
+  const wsRaw = typeof input?.workstreamId === "string" ? input.workstreamId.trim() : "";
+  const workstreamId = wsRaw && !SEED_WORKSTREAM_IDS.has(wsRaw) ? wsRaw : DEFAULT_WATCH.workstreamId;
   const teams = Array.isArray(input?.teams)
     ? input!.teams
         .filter((t): t is string => typeof t === "string" && !!t.trim())
@@ -453,7 +448,6 @@ export function normalizeWatch(input: WatchConfigInput | null): WatchConfig {
   const slackWatch = normalizeSlackWatch(input);
   return {
     repo,
-    pr,
     workstreamId,
     teams,
     slackWatch,

@@ -78,6 +78,21 @@ http() { # METHOD PATH [BODY] -> sets CODE, BODY
 }
 
 T0=$SECONDS
+# Every source is optional. Read which ones watch.json enables (file read only; no Control needed).
+# GitHub with no repo / Slack with no surfaces → SKIPPED (not failed), with no fix line.
+WATCH_FILE="${CONTROL_WATCH_PATH:-$ROOT/.control/watch.json}"
+WATCH_REPO=""; WATCH_SLACK=0
+if [[ -f "$WATCH_FILE" ]] && have python3; then
+  read -r WATCH_REPO WATCH_SLACK < <(python3 -c 'import json,sys
+try: w=json.load(open(sys.argv[1]))
+except Exception: w={}
+sw=w.get("slackWatch") if isinstance(w.get("slackWatch"),dict) else {}
+n=len(sw.get("surfaces") or [])+(1 if sw.get("includeDms") or sw.get("includeMpims") else 0)
+print((str(w.get("repo") or "").strip() or "-"), n)' "$WATCH_FILE" 2>/dev/null || echo "- 0")
+  [[ "$WATCH_REPO" == "-" ]] && WATCH_REPO=""
+fi
+GH_SKIP="GitHub skipped: no repo in watch.json (optional source)"
+SLACK_SKIP="Slack skipped: no channels or DMs in watch.json (optional source)"
 echo "control-doctor — CONTROL_BASE_URL=$BASE"
 
 # ---- 1. Prereqs ----
@@ -87,7 +102,8 @@ if have node; then
   if (( maj >= 18 )); then record "node" PASS "$v"; else record "node" FAIL "$v (need >= 18)" "install Node 20 LTS: https://nodejs.org (or: nvm install 20)"; fi
 else record "node" FAIL "not found" "install Node 20 LTS: https://nodejs.org (or: nvm install 20)"; fi
 if have npm; then record "npm" PASS "$(npm --version)"; else record "npm" FAIL "not found" "install Node 20 LTS (bundles npm): https://nodejs.org"; fi
-if have gh; then
+if [[ -z "$WATCH_REPO" ]]; then record "gh auth" SKIP "$GH_SKIP" ""
+elif have gh; then
   if gh auth status >/dev/null 2>&1; then record "gh auth" PASS "gh authenticated"
   else record "gh auth" FAIL "gh not logged in" "gh auth login"; fi
 else record "gh auth" FAIL "gh not installed" "install GitHub CLI: https://cli.github.com then: gh auth login"; fi
@@ -121,8 +137,8 @@ blocked() { record "$1" SKIP "blocked: Control is down" "fix step 2 first: npm i
 hdr "3. Live configured"
 if (( UP )); then
   repo=$(json_get "$BODY" 'd.watch.repo'); sc=$(json_get "$BODY" 'd.watch.surfaceCount')
-  if [[ -n "$repo" && "${sc:-0}" -ge 1 ]]; then record "Live config" PASS "repo=$repo, slackWatch surfaces=$sc"
-  else record "Live config" FAIL "repo='${repo:-<none>}', slackWatch surfaces=${sc:-0}" "open $BASE/get-live and set repo + at least one Slack surface"; fi
+  # Every source is optional: any combination (incl. none) is a valid Live config.
+  record "Live config" PASS "GitHub: ${repo:-skipped (no repo)} · Slack: $([[ "${sc:-0}" -ge 1 ]] && echo "$sc surface(s)" || echo "skipped (no channels)") · Claude sessions + manual items always on"
 else blocked "Live config"; fi
 
 # ---- 4. Workers ----
@@ -134,7 +150,8 @@ if (( UP )); then
   if http GET /api/watchers/status && [[ "$CODE" == 200 ]]; then
     for id in review-worker github-outbox github-watch; do
       st=$(json_get "$BODY" "(()=>{const r=(Array.isArray(d.watchers)?d.watchers:Object.values(d.watchers||{})).find(w=>w.id==='$id');if(!r)return 'missing';if(!r.updated_at)return 'never-reported';if(r.stale)return 'stale';if(r.status==='error')return 'error';return 'fresh:'+r.status})()")
-      if [[ "$st" == fresh:* ]]; then record "watcher $id" PASS "$st"
+      if [[ "$id" == github-watch && -z "$WATCH_REPO" ]]; then record "watcher $id" SKIP "$GH_SKIP" ""
+      elif [[ "$st" == fresh:* ]]; then record "watcher $id" PASS "$st"
       else record "watcher $id" FAIL "${st:-unknown}" "CONTROL_BASE_URL=$BASE ./scripts/dogfood-up   (leave it running; workers report within ~30s)"; fi
     done
   else record "watchers status" FAIL "GET /api/watchers/status HTTP $CODE" "./scripts/dogfood-up"; fi
@@ -171,7 +188,8 @@ else blocked "server sees claude"; blocked "verify job"; fi
 
 # ---- 6. Slack MCP + GitHub watcher dry-run ----
 hdr "6. Slack MCP + GitHub watcher"
-if (( CLAUDE_OK )); then
+if (( WATCH_SLACK == 0 )); then record "Slack MCP" SKIP "$SLACK_SKIP" ""
+elif (( CLAUDE_OK )); then
   SLACK_FIX="claude plugin marketplace update anthropic-plugin-directory && claude plugin install slack@anthropic-plugin-directory   (official Slack MCP at https://mcp.slack.com/mcp; shows as plugin:slack:slack). Then in a claude session: /mcp → slack → Authenticate, and click Allow in the browser IMMEDIATELY — the localhost:3118 OAuth callback times out fast (just retry if it does). Needs you + workspace admin approval. Do NOT use bare 'claude mcp add --transport http slack https://mcp.slack.com/mcp' (fails: no dynamic client registration)."
   mcp_all=$(run_to 45 claude mcp list 2>&1); mcp_rc=$?
   mcp=$(grep -i slack <<<"$mcp_all" || true)
@@ -185,7 +203,8 @@ if [[ "${SHOW_SLACK:-0}" == 1 && -f scripts/slack-watch.md ]]; then
   sed -n '/^## Agent loop/,/^### Message POST/p' scripts/slack-watch.md | sed '$d' | sed 's/^/  | /'
 fi
 # github-watcher-tick.sh --dry-run: prints would-post, does not curl Control (no inbox POST, no status PUT).
-if (( UP )) && have gh && gh auth status >/dev/null 2>&1; then
+if [[ -z "$WATCH_REPO" ]]; then record "github-watcher-tick --dry-run" SKIP "$GH_SKIP" ""
+elif (( UP )) && have gh && gh auth status >/dev/null 2>&1; then
   if out=$(run_to 120 bash ./scripts/github-watcher-tick.sh --dry-run 2>&1); then record "github-watcher-tick --dry-run" PASS "$(echo "$out" | tail -1)"
   else record "github-watcher-tick --dry-run" FAIL "$(echo "$out" | grep -iE 'error|fail' | tail -2 | tr '\n' ' ')$(echo "$out" | tail -1)" "open $BASE/get-live (repo), gh auth login, then bash ./scripts/github-watcher-tick.sh --dry-run"; fi
 else record "github-watcher-tick --dry-run" SKIP "blocked: needs Control up + gh auth" "fix steps 1-2 first"; fi

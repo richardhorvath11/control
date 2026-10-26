@@ -30,7 +30,6 @@ const MY = "U0ME123";
 
 const watch: WatchConfig = {
   repo: "richardhorvath11/battle-buddy",
-  pr: 32,
   workstreamId: "ws-cred",
   teams: [],
   slackWatch: {
@@ -315,7 +314,7 @@ assert(
   prLink.attention?.id?.startsWith("ext-att-review-"),
   "8 pr_link coalesce id"
 );
-assert(prLink.workstreamPatch !== null, "8 pr_link still patches workstream");
+assert(prLink.workstreamPatch === null && !!prLink.newWorkstream?.ephemeral, "8 pr_link opens its own ephemeral review workstream");
 
 assert(NEEDS_YOU_EXTERNAL_CAP === 5, "cap unchanged at 5");
 

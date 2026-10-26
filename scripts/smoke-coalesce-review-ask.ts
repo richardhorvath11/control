@@ -26,7 +26,6 @@ import type { StoredSlackInboxItem } from "../src/lib/slack-inbox";
 
 const watch: WatchConfig = {
   repo: "richardhorvath11/battle-buddy",
-  pr: 32,
   workstreamId: "ws-cred",
   teams: ["platform"],
   slackWatch: {
@@ -94,7 +93,7 @@ const slackFx = routeSlackEvent(slackEv("C0BVCSA4T2P_1.1", "1.1"), watch);
 assert(slackFx.attention?.id === STABLE, "1 slack stable id");
 assert(slackFx.attention?.origin === "external", "1 slack origin external");
 assert(!!slackFx.attention?.coalesceKey, "1 slack coalesceKey");
-assert(!!slackFx.workstreamPatch?.checkpointLine, "8 slack checkpoint");
+assert(!!slackFx.newWorkstream?.checkpoint?.includes("Latest:"), "8 slack checkpoint (on its ephemeral review workstream)");
 
 const ghTeam = routeGithubEvent(
   {
@@ -280,7 +279,8 @@ const seedBody =
   "You left Friday after pushing the rotation PR. Seed prose stays.";
 let cp = mergeCheckpoint(
   seedBody,
-  slackFx.workstreamPatch!.checkpointLine!
+  // Slack PR links now open an ephemeral stream; merge its Latest line the same way.
+  slackFx.newWorkstream!.checkpoint.split("Latest: ").pop()!
 );
 cp = mergeCheckpoint(cp, ghTeam.workstreamPatch!.checkpointLine!);
 assert(cp.startsWith(seedBody), "8 seed body preserved");
